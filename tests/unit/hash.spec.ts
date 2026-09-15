@@ -187,6 +187,11 @@ test('зниклий відстежуваний файл не збігаєтьс
     // У `gone` файл лишається відстежуваним, але зникає з диска.
     rmSync(path.join(gone, 'app/a.tsx'));
 
+    // Без цього рядка тест зеленів би й тоді, коли git не перелічує зниклий
+    // файл: `gone` мав би нуль файлів проти одного, хеші різнилися б і так, а
+    // гілка сентинела не виконалася б жодного разу (R-54).
+    expect(sourceHash(gone).fileCount).toBe(1);
+
     expect(sourceHash(gone).hash).not.toBe(sourceHash(literal).hash);
   } finally {
     rmSync(gone, { recursive: true, force: true });

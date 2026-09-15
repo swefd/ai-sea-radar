@@ -62,11 +62,29 @@ export function listSourceFiles(root) {
 
   const entries = raw.split('\0');
 
+  // Під час конфлікту `-c` віддає по рядку на кожну стадію того самого шляху,
+  // тож без Set файл хешувався б кілька разів, а fileCount роздувався б.
+  const selected = [
+    ...new Set(
+      entries.filter((relPath) => relPath !== '' && isSourcePath(relPath)),
+    ),
+  ].sort();
+
   // Шлях із невалідним UTF-8 декодується в U+FFFD, далі readFileSync дає
   // ENOENT, і файл тихо стає `<missing>` — тобто хеш мовчки бреше. У цьому
   // репозиторії таких імен немає; якщо колись з'являться, краще впасти
   // голосно, ніж повернути правдоподібний хеш (R-50).
-  for (const relPath of entries) {
+  //
+  // Вартовий стоїть ПІСЛЯ фільтра, і це не деталь: шлях, якого ми не хешуємо,
+  // не може зробити дайджест брехливим, тож відхиляти його — не наша справа.
+  // Інакше один зіпсований байт в імені файлу під docs/ валив би sourceHash, а
+  // з ним і всі перевірки, які до того файлу не мають стосунку — вартовий,
+  // ширший за те, що він захищає, сам стає відмовою (R-53).
+  //
+  // Звуження безпечне: кожен префікс у SOURCE_PREFIXES — ASCII, а зіпсовані
+  // байти живуть у частині з іменем, тож `src/<мотлох>.tsx` усе одно збігається
+  // з 'src/' і все одно ловиться.
+  for (const relPath of selected) {
     if (relPath.includes(REPLACEMENT_CHARACTER)) {
       throw new Error(
         `listSourceFiles: шлях не є валідним UTF-8 і декодувався з втратою: ${relPath}`,
@@ -74,13 +92,7 @@ export function listSourceFiles(root) {
     }
   }
 
-  // Під час конфлікту `-c` віддає по рядку на кожну стадію того самого шляху,
-  // тож без Set файл хешувався б кілька разів, а fileCount роздувався б.
-  return [
-    ...new Set(
-      entries.filter((relPath) => relPath !== '' && isSourcePath(relPath)),
-    ),
-  ].sort();
+  return selected;
 }
 
 export function sourceHash(root) {
