@@ -6,7 +6,10 @@
     "dev": "next dev -H 127.0.0.1 -p 3000",
     "build": "next build",
     "lint": "eslint .",
-    "check-types": "tsc -p tsconfig.json --pretty --noEmit"
+    "check-types": "tsc -p tsconfig.json --pretty --noEmit",
+    "verify": "node scripts/verify/run.mjs --tier fast",
+    "verify:full": "node scripts/verify/run.mjs --tier full",
+    "verify:checkpoint": "node scripts/verify/run.mjs --tier full --no-skip"
   },
   "dependencies": {
     "leaflet": "1.9.4",
