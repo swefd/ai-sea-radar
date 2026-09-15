@@ -30,10 +30,9 @@ export const PRECONDITIONS = {
   },
   'playwright-browser': {
     describe: 'немає бінарника chromium у кеші Playwright',
-    probe: () => {
-      const cache = process.env.PLAYWRIGHT_BROWSERS_PATH || defaultBrowsersPath();
+    probe: (root) => {
       try {
-        return readdirSync(cache).some((entry) => entry.startsWith('chromium'));
+        return readdirSync(browsersPath(root)).some((entry) => entry.startsWith('chromium'));
       } catch {
         return false;
       }
@@ -46,6 +45,23 @@ function defaultBrowsersPath() {
   if (platform() === 'darwin') return path.join(home, 'Library', 'Caches', 'ms-playwright');
   if (platform() === 'win32') return path.join(home, 'AppData', 'Local', 'ms-playwright');
   return path.join(home, '.cache', 'ms-playwright');
+}
+
+/**
+ * Куди Playwright кладе браузери. `PLAYWRIGHT_BROWSERS_PATH=0` — документоване
+ * значення «у node_modules», і воно істинне як рядок: наївне `env || default`
+ * робить із нього відносний шлях «0», проба падає й вічно каже «браузера немає».
+ * Тихий SKIPPED там, де e2e цілком міг би бігти. Розвʼязання — дослівно як у
+ * playwright-core: при "0" це `<корінь пакета playwright-core>/.local-browsers`.
+ */
+export function browsersPath(root) {
+  const fromEnv = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (fromEnv === '0') {
+    const requireFrom = createRequire(path.join(root, 'package.json'));
+    return path.join(path.dirname(requireFrom.resolve('playwright-core/package.json')), '.local-browsers');
+  }
+  if (fromEnv) return fromEnv;
+  return defaultBrowsersPath();
 }
 
 export const CHECKS = [
@@ -102,7 +118,13 @@ export const CHECKS = [
     // заборона в конфігу. Проєкт `unit` не задає жодного бар'єра, який завадив би
     // спеці звернутися до `page` і підняти chromium. Спека §3.1 забороняє
     // blindSpot, вужчий за реальність, тож формулювання каже, що саме тримає межу.
-    blindSpot: 'Ні DOM, ні Leaflet. Браузера не піднімає — але це домовленість тестів, а не заборона в конфігу: спека, яка звернеться до `page`, підніме chromium і в цьому проєкті. Про рендер і карту не говорить нічого. Випадок, якого ніхто не написав, не покритий',
+    //
+    // Доповнення контролера (R-62). Відтворено, а не виведено з конфігу: файл з
+    // одним `test.only` дає `--list` → «Total: 3 tests», прогін → «1 passed» і
+    // вихід 0; файл із суцільним `test.skip` дає «2 skipped» і вихід 0. Обидва —
+    // PASSED. Проба порожнечі тут не рятує: вона питає, чи тести НАПИСАНО, а
+    // діра в тому, що написані тести не ВИКОНАНО.
+    blindSpot: 'Ні DOM, ні Leaflet. Браузера не піднімає — але це домовленість тестів, а не заборона в конфігу: спека, яка звернеться до `page`, підніме chromium і в цьому проєкті. Про рендер і карту не говорить нічого. Випадок, якого ніхто не написав, не покритий. Написаний, але не виконаний випадок — теж не покритий: `test.only` за невимкненого `forbidOnly`, суцільний `test.skip` або звуження через `--grep` лишають вихід 0, а проба переліку рахує такі тести як наявні, тож `emptyProbe` не спрацьовує. Рядок покаже PASSED прогону, в якому не виконано жодного твердження',
   },
   {
     id: 'build',
@@ -129,6 +151,6 @@ export const CHECKS = [
     // Перші два речення — дослівно зі спеки §4. Третє додано свідомо:
     // §3.1 забороняє blindSpot, вужчий за реальність, а reuseExistingServer: true
     // з конфігу задачі 1 дозволяє протестувати чужий сервер на 127.0.0.1:3000.
-    blindSpot: '**Рух не перевіряє** — перевірка руху з керованим часом належить R3. Тайли заблоковані, тож про справжні зображення карти не говорить нічого. Не доводить, що dev-сервер зібрано саме з цього дерева: `reuseExistingServer: true` прийме вже піднятий сервер іншої гілки',
+    blindSpot: '**Рух не перевіряє** — перевірка руху з керованим часом належить R3. Тайли заблоковані, тож про справжні зображення карти не говорить нічого. Не доводить, що dev-сервер зібрано саме з цього дерева: `reuseExistingServer: true` прийме вже піднятий сервер іншої гілки. Те саме, що й у `unit`: `test.only` за невимкненого `forbidOnly` чи суцільний `test.skip` дають вихід 0 і PASSED без жодного виконаного твердження',
   },
 ];

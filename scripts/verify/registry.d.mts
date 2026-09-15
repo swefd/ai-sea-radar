@@ -25,3 +25,4 @@ export interface Precondition {
 export declare const DEFAULT_TIMEOUT_MS: number;
 export declare const CHECKS: Check[];
 export declare const PRECONDITIONS: Record<string, Precondition>;
+export declare function browsersPath(root: string): string;

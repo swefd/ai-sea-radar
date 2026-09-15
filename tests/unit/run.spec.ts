@@ -11,6 +11,7 @@ import {
   CHECKS,
   DEFAULT_TIMEOUT_MS,
   PRECONDITIONS,
+  browsersPath,
 } from '../../scripts/verify/registry.mjs';
 import {
   type CheckResult,
@@ -84,6 +85,15 @@ test('parseArgs: невідомий прапорець — помилка, а н
   expect(() => parseArgs(['--tier', 'quick'])).toThrow(/quick/);
 });
 
+test('parseArgs: наступний прапорець — не значення, а форма з = лишається відкритою', () => {
+  // `--root --json` давав root='--json' І гасив json — неправильний корінь плюс
+  // загублений режим, обидва мовчки. `--tier` і `--only` ловили це випадково,
+  // бо перевіряють значення; `--root` приймає будь-що.
+  expect(() => parseArgs(['--root', '--json'])).toThrow(/--json/);
+  // Значення, що справді починається з «--», лишається досяжним через `=`.
+  expect(parseArgs(['--root=--x']).root).toBe('--x');
+});
+
 // 3. selectChecks — рівні зі спеки §3.3.
 test('selectChecks: fast бере лише fast, full бере fast + full', () => {
   const fast = selectChecks(CHECKS, { tier: 'fast', only: [] }).map((c) => c.id);
@@ -106,9 +116,25 @@ test('selectChecks: порожня вибірка — помилка, а не м
   expect(() => selectChecks(CHECKS, { tier: 'fast', only: ['build'] })).toThrow(/fast/);
 });
 
+test('selectChecks: порожній РІВЕНЬ — теж помилка, не лише порожній --only', () => {
+  // Прапорця, який спорожнив би рівень, не існує. Зате існує правка registry.mjs:
+  // реєстр — дані, його редагують не дивлячись у run.mjs, і рівень без жодного
+  // рядка дав би нуль блокувань і EXIT=0 — зелене, яке не перевірило нічого.
+  const noFast: Check[] = [
+    { id: 'only-full', tier: 'full', cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+  ];
+  expect(() => selectChecks(noFast, { tier: 'fast', only: [] })).toThrow(/fast/);
+});
+
 // 4. orderChecks — поле after.
 test('orderChecks: залежність стоїть перед залежним', () => {
   const ids = orderChecks(selectChecks(CHECKS, { tier: 'full', only: [] })).map((c) => c.id);
+  // Спершу — що рядки взагалі є. `indexOf` зниклого id дає -1, а -1 менший за
+  // будь-що: без цих трьох рядків тест лишався б зеленим на порожньому реєстрі
+  // й доводив би порядок, якого нема чим порушити (R-50).
+  expect(ids).toContain('typecheck');
+  expect(ids).toContain('build');
+  expect(ids).toContain('e2e');
   expect(ids.indexOf('typecheck')).toBeLessThan(ids.indexOf('build'));
   expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('e2e'));
 });
@@ -140,6 +166,17 @@ test('classifyExit: ENOENT, 127, 126, таймаут — UNRUNNABLE, нікол�
   expect(classifyExit({ exitCode: 127 }).status).toBe('UNRUNNABLE');
   expect(classifyExit({ exitCode: 126 }).status).toBe('UNRUNNABLE');
   expect(classifyExit({ timedOut: true, signal: 'SIGKILL' }).status).toBe('UNRUNNABLE');
+});
+
+test('classifyExit: відсутній код виходу — UNRUNNABLE, а не FAILED', () => {
+  // `run.d.mts` оголошує всі поля необовʼязковими, тож задачі 4, 9 і 10 мають
+  // право покликати classifyExit({}). FAILED тут стверджував би, що перевірка
+  // бігла й знайшла проблему, — про перевірку, яка не дала взагалі нічого.
+  const r = classifyExit({});
+  expect(r.status).toBe('UNRUNNABLE');
+  expect(r.status).not.toBe('FAILED');
+  // null із сигналом і далі називає сигнал: розширення не з'їло старої гілки.
+  expect(classifyExit({ exitCode: null, signal: 'SIGTERM' }).reason).toContain('SIGTERM');
 });
 
 // 6. parsePlaywrightTotal — окремий випадок зі спеки §3.2.
@@ -210,6 +247,78 @@ test('runAll: чотири статуси на чужому реєстрі — �
     expect(results.find((r) => r.id === 'bad')?.exitCode).toBe(3);
     // Вивід справді зібрано, а не лише оголошено в декларації.
     expect(results.find((r) => r.id === 'ok')?.stdout).toBe('ok');
+
+    // Форма рядка — фіксований контракт --json (R-16), і жоден тест у наборі
+    // не виконує CLI. Без цих чотирьох тверджень `durationMs`, викинутий із
+    // finish(), лишив би всі тести зеленими, а звіт задачі 4 — з порожньою
+    // колонкою тривалості. Половина «конверта» (п'ять верхніх ключів) — за
+    // задачею 4 (R-64).
+    for (const r of results) {
+      expect(typeof r.id).toBe('string');
+      expect(typeof r.status).toBe('string');
+      expect(typeof r.reason).toBe('string');
+      expect(Number.isFinite(r.durationMs) && r.durationMs >= 0).toBe(true);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runAll: невідома передумова коштує один рядок, а не весь прогін', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-badneed-'));
+  try {
+    const tier: Tier = 'fast';
+    const checks: Check[] = [
+      { id: 'first', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+      { id: 'typo', tier, cmd: 'true', needs: ['передумови-нема'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'third', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+    ];
+
+    const results: CheckResult[] = await runAll({
+      checks, root, tier, noSkip: false, only: [], timeoutMs: null,
+    });
+
+    // Друкарська помилка в даних одного рядка не має стирати результати тих,
+    // хто вже відбігав: у `--tier full` це хвилини `build`.
+    expect(results.map((r) => [r.id, r.status])).toEqual([
+      ['first', 'PASSED'],
+      ['typo', 'UNRUNNABLE'],
+      ['third', 'PASSED'],
+    ]);
+    // Причина мусить називати винуватця — інакше шукати доведеться очима.
+    expect(results.find((r) => r.id === 'typo')?.reason).toContain('передумови-нема');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runAll: багатобайтовий вивід переживає межі буфера', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-utf8-'));
+  try {
+    // Один ASCII-байт попереду — не прикраса: він зсуває кожну межу символу
+    // з парних зсувів, на які лягає буфер труби, тож розрив гарантовано
+    // припадає на середину «ї».
+    const count = 150_000;
+    const tier: Tier = 'fast';
+    const checks: Check[] = [
+      {
+        id: 'utf8',
+        tier,
+        cmd: `node -e "process.stdout.write('a' + 'ї'.repeat(${count}))"`,
+        needs: [], after: [], proves: '.', blindSpot: '.',
+      },
+    ];
+
+    const results = await runAll({ checks, root, tier, noSkip: false, only: [], timeoutMs: null });
+    const { stdout } = results[0];
+
+    // Довжина — це й precondition: 150001 символ по 2 байти на «ї» дає ~300 КБ,
+    // тобто вивід точно не вмістився в один шматок (R-50).
+    expect(results[0].status).toBe('PASSED');
+    expect(stdout).toHaveLength(count + 1);
+    // U+FFFD зібрано з коду, а не вписано літерою: R-13 забороняє сам символ
+    // у відстежуваному файлі, і те саме робить hash.mjs (R-55).
+    expect(stdout).not.toContain(String.fromCharCode(0xfffd));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -224,12 +333,13 @@ test('реєстр: id унікальні, tier валідний, посилан
     for (const need of check.needs) expect(Object.keys(PRECONDITIONS)).toContain(need);
     for (const dep of check.after) expect(ids).toContain(dep);
   }
-  // Таймаут — теж дані рядка. Перекриття мусить бути ЩЕДРІШИМ за дефолт:
-  // таймаут дає UNRUNNABLE, тобто блокування з неправдивої причини, тож
-  // рядок, що просить власний ліміт менший за загальний, — помилка (R-17).
+  // Таймаут — теж дані рядка. Пінимо лише те, що справді інваріант: додатність.
+  // R-17 фіксує дефолт і два перекриття по 300 с, і не забороняє рядку просити
+  // КОРОТШИЙ повідець — швидкій структурній перевірці 30 с цілком доречні.
+  // Заборона змусила б задачу 10 правити тест, щоб додати рядок.
   expect(DEFAULT_TIMEOUT_MS).toBeGreaterThan(0);
   for (const check of CHECKS) {
-    if (check.timeoutMs !== undefined) expect(check.timeoutMs).toBeGreaterThan(DEFAULT_TIMEOUT_MS);
+    if (check.timeoutMs !== undefined) expect(check.timeoutMs).toBeGreaterThan(0);
   }
 });
 
@@ -274,5 +384,33 @@ test('реєстр: проби передумов відповідають че�
     else process.env.PLAYWRIGHT_BROWSERS_PATH = savedBrowsersPath;
     rmSync(empty, { recursive: true, force: true });
     rmSync(browsers, { recursive: true, force: true });
+  }
+});
+
+test('browsersPath: «0» — документоване значення, а не тека з такою назвою', () => {
+  // Єдина проба, чия неправильна відповідь невидима: на машині з
+  // PLAYWRIGHT_BROWSERS_PATH=0 наївне `env || default` дає відносний шлях «0»,
+  // readdirSync падає, і e2e назавжди SKIPPED із причиною, неправдивою про це
+  // середовище, а `verify:full` щоразу віддає 0.
+  const saved = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  try {
+    process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+    const inNodeModules = browsersPath(process.cwd());
+    expect(inNodeModules).not.toBe('0');
+    expect(inNodeModules).toContain('node_modules');
+    expect(inNodeModules.endsWith('.local-browsers')).toBe(true);
+
+    // Звичайне значення йде далі як є.
+    process.env.PLAYWRIGHT_BROWSERS_PATH = '/tmp/sea-radar-browsers';
+    expect(browsersPath(process.cwd())).toBe('/tmp/sea-radar-browsers');
+
+    // Немає змінної — дефолт платформи, абсолютний.
+    delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    const fallback = browsersPath(process.cwd());
+    expect(path.isAbsolute(fallback)).toBe(true);
+    expect(fallback.endsWith('ms-playwright')).toBe(true);
+  } finally {
+    if (saved === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    else process.env.PLAYWRIGHT_BROWSERS_PATH = saved;
   }
 });

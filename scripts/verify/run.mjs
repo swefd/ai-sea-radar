@@ -22,8 +22,12 @@ export function parseArgs(argv) {
   };
   const valueOf = (arg, i, name) => {
     if (arg.startsWith(`${name}=`)) return [arg.slice(name.length + 1), i];
-    if (argv[i + 1] === undefined) throw new Error(`прапорець ${name} без значення`);
-    return [argv[i + 1], i + 1];
+    const next = argv[i + 1];
+    if (next === undefined) throw new Error(`прапорець ${name} без значення`);
+    // Наступний прапорець — не значення. `--root --json` мовчки давав root='--json'
+    // і лишав json вимкненим: неправильний корінь плюс загублений режим, обидва тихо.
+    if (next.startsWith('--')) throw new Error(`прапорець ${name} без значення (далі йде ${next})`);
+    return [next, i + 1];
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -59,6 +63,12 @@ export function parseArgs(argv) {
 
 export function selectChecks(checks, { tier, only }) {
   const byTier = tier === 'full' ? checks : checks.filter((c) => c.tier === 'fast');
+  // Порожня вибірка — не «усе пройшло». Нуль рядків дає нуль блокувань і EXIT=0:
+  // зелений прогін, який не перевірив НІЧОГО. Це найгірший з можливих результатів
+  // шару, тож помилкою має бути КОЖЕН шлях до нього, а не лише шлях через --only.
+  // Рівень порожніє не від прапорця, а від правки registry.mjs: реєстр — дані,
+  // його редагують не дивлячись у run.mjs, і саме там ця діра відкривається.
+  if (byTier.length === 0) throw new Error(`рівень ${tier} не містить жодного рядка`);
   if (only.length === 0) return byTier;
   const known = new Set(checks.map((c) => c.id));
   for (const id of only) if (!known.has(id)) throw new Error(`--only: невідомий id ${id}`);
@@ -96,7 +106,12 @@ export function classifyExit({ spawnError, exitCode, signal, timedOut }) {
   if (exitCode === 127) return { status: 'UNRUNNABLE', reason: 'команду не знайдено (вихід 127)' };
   if (exitCode === 126) return { status: 'UNRUNNABLE', reason: 'команда не виконувана (вихід 126)' };
   if (exitCode === 0) return { status: 'PASSED', reason: '' };
-  if (exitCode === null) return { status: 'UNRUNNABLE', reason: `обірвано сигналом ${signal}` };
+  if (exitCode == null) {
+    // `== null` навмисно: і null (обірвано сигналом), і undefined (виклик із
+    // чужого модуля — усі поля в run.d.mts необовʼязкові). Процес, що не дав коду
+    // виходу, нічого не довів; FAILED тут стверджував би, що перевірка бігла.
+    return { status: 'UNRUNNABLE', reason: signal ? `обірвано сигналом ${signal}` : 'процес не дав коду виходу' };
+  }
   return { status: 'FAILED', reason: `вихід ${exitCode}` };
 }
 
@@ -136,23 +151,34 @@ function runCommand(cmd, root, timeoutMs) {
       env: process.env,
     });
     let stdout = ''; let stderr = ''; let timedOut = false;
+    // Декодуємо потік, а не кожен шматок: багатобайтовий символ, що розпався на
+    // межі буфера, при `stdout += buffer` став би U+FFFD. Вивід тут українською,
+    // задача 4 кладе ці рядки у файл, а U+FFFD цей шар читає як підпис псування.
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
 
+    let killTimer = null;
     const timer = setTimeout(() => {
       timedOut = true;
       try { process.kill(-child.pid, 'SIGTERM'); } catch { /* група вже мертва */ }
-      setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* так само */ } }, 2_000);
+      // Другий таймер тримають за руку. Без clearTimeout раннер жив би зайві 2 с
+      // після кожного таймауту; гірше — якби група померла від SIGTERM і ОС встигла
+      // перевикористати pid, SIGKILL пішов би чужій групі, а catch це сховав би.
+      killTimer = setTimeout(() => {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* так само */ }
+      }, 2_000);
+      killTimer.unref();
     }, timeoutMs);
 
-    child.on('error', (spawnError) => {
+    const settle = (outcome) => {
       clearTimeout(timer);
-      resolve({ spawnError, exitCode: null, signal: null, timedOut, stdout, stderr });
-    });
-    child.on('close', (exitCode, signal) => {
-      clearTimeout(timer);
-      resolve({ spawnError: null, exitCode, signal, timedOut, stdout, stderr });
-    });
+      if (killTimer) clearTimeout(killTimer);
+      resolve(outcome);
+    };
+    child.on('error', (spawnError) => settle({ spawnError, exitCode: null, signal: null, timedOut, stdout, stderr }));
+    child.on('close', (exitCode, signal) => settle({ spawnError: null, exitCode, signal, timedOut, stdout, stderr }));
   });
 }
 
@@ -174,12 +200,20 @@ export async function runAll({ checks = CHECKS, root, tier, noSkip, only, timeou
     if (brokenDep) { finish('NOT_RUN', `не запускалась: ${brokenDep} → ${statusById.get(brokenDep)}`); continue; }
 
     // 2. Передумови. Про код не говорять НІЧОГО.
+    // Невідомий id — помилка ДАНИХ одного рядка, не аварія прогону. Вона робить
+    // UNRUNNABLE цей рядок і не чіпає решти: інакше друкарська помилка в реєстрі
+    // стирала б результати всіх, хто вже відбігав.
+    const unknownNeed = check.needs.find((n) => !PRECONDITIONS[n]);
+    if (unknownNeed) { finish('UNRUNNABLE', `невідома передумова в реєстрі: ${unknownNeed}`); continue; }
     const missing = check.needs.find((n) => !PRECONDITIONS[n].probe(root));
     if (missing) { finish('SKIPPED', PRECONDITIONS[missing].describe); continue; }
 
     const limit = timeoutMs ?? check.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     // 3. Проба порожнечі. Нуль знайдених тестів — SKIPPED, ніколи PASSED.
+    // Поле зветься загально, розбір — ні: `parsePlaywrightTotal` розуміє лише
+    // вивід Playwright. Рядок із чужим перелічувачем стане UNRUNNABLE, а не
+    // зеленим — напрямок безпечний, але це межа реєстру-як-даних, не примха.
     if (check.emptyProbe) {
       const probe = await runCommand(check.emptyProbe.cmd, root, limit);
       const total = parsePlaywrightTotal(`${probe.stdout}\n${probe.stderr}`);
