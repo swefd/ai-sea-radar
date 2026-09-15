@@ -182,7 +182,7 @@ function runCommand(cmd, root, timeoutMs) {
   });
 }
 
-export async function runAll({ checks = CHECKS, root, tier, noSkip, only, timeoutMs }) {
+export async function runAll({ checks = CHECKS, preconditions = PRECONDITIONS, root, tier, noSkip, only, timeoutMs }) {
   const ordered = orderChecks(selectChecks(checks, { tier, only }));
   const results = [];
   const statusById = new Map();
@@ -202,11 +202,14 @@ export async function runAll({ checks = CHECKS, root, tier, noSkip, only, timeou
     // 2. Передумови. Про код не говорять НІЧОГО.
     // Невідомий id — помилка ДАНИХ одного рядка, не аварія прогону. Вона робить
     // UNRUNNABLE цей рядок і не чіпає решти: інакше друкарська помилка в реєстрі
-    // стирала б результати всіх, хто вже відбігав.
-    const unknownNeed = check.needs.find((n) => !Object.hasOwn(PRECONDITIONS, n));
-    if (unknownNeed) { finish('UNRUNNABLE', `невідома передумова в реєстрі: ${unknownNeed}`); continue; }
-    const missing = check.needs.find((n) => !PRECONDITIONS[n].probe(root));
-    if (missing) { finish('SKIPPED', PRECONDITIONS[missing].describe); continue; }
+    // стирала б результати всіх, хто вже відбігав. Питання саме «чи можна цим
+    // скористатися»: власний ключ зі значенням `undefined`, `null` або з половиною
+    // запису (`describe` без `probe`) — теж помилка даних, і теж вартий одного рядка,
+    // а не TypeError назовні з runAll.
+    const unusableNeed = check.needs.find((n) => typeof preconditions[n]?.probe !== 'function');
+    if (unusableNeed) { finish('UNRUNNABLE', `невідома передумова в реєстрі: ${unusableNeed}`); continue; }
+    const missing = check.needs.find((n) => !preconditions[n].probe(root));
+    if (missing) { finish('SKIPPED', preconditions[missing].describe); continue; }
 
     const limit = timeoutMs ?? check.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 

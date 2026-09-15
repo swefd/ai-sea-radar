@@ -4,7 +4,7 @@
 // Специфікатор — './registry.mjs' (рантайм-шлях), а не './registry.d.mts':
 // декларацію TS знаходить сам. Обидві форми компілюються за поточного
 // moduleResolution: "bundler", але лише перша переживе перехід на "node16".
-import type { Check, Tier } from './registry.mjs';
+import type { Check, Precondition, Tier } from './registry.mjs';
 
 export type Status = 'PASSED' | 'FAILED' | 'SKIPPED' | 'NOT_RUN' | 'UNRUNNABLE';
 
@@ -47,6 +47,7 @@ export declare function parsePlaywrightTotal(text: string): number | null;
 export declare function resolveRoot(cwd: string): string;
 export declare function runAll(options: {
   checks?: Check[];
+  preconditions?: Record<string, Precondition>;
   root: string;
   tier: Tier;
   noSkip: boolean;

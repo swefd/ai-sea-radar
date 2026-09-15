@@ -297,6 +297,47 @@ test('runAll: невідома передумова коштує один ряд
   }
 });
 
+test('runAll: несправна передумова коштує один рядок, а не весь прогін', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-badprecond-'));
+  try {
+    const tier: Tier = 'fast';
+    // Мапа передумов — така сама даність, як CHECKS, і так само підставна.
+    // Приведення типів тут не недбалість, а сам предмет тесту: це форми, які
+    // TypeScript заборонив би, а правка руками створює щотижня.
+    const preconditions = {
+      'є-й-каже-ні': { describe: 'вигаданої передумови немає', probe: () => false },
+      'порожня': undefined,
+      'недописана': { describe: 'половина запису з двох полів' },
+    } as unknown as Record<string, Precondition>;
+    const checks: Check[] = [
+      { id: 'first', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+      { id: 'undef', tier, cmd: 'true', needs: ['порожня'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'half', tier, cmd: 'true', needs: ['недописана'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'skipped', tier, cmd: 'true', needs: ['є-й-каже-ні'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'last', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+    ];
+
+    const results: CheckResult[] = await runAll({
+      checks, preconditions, root, tier, noSkip: false, only: [], timeoutMs: null,
+    });
+
+    // Дві несправні форми коштують по рядку. Ті, хто відбігав до них, лишаються
+    // в результатах, а ті, хто після, — біжать.
+    expect(results.map((r) => [r.id, r.status])).toEqual([
+      ['first', 'PASSED'],
+      ['undef', 'UNRUNNABLE'],
+      ['half', 'UNRUNNABLE'],
+      ['skipped', 'SKIPPED'],
+      ['last', 'PASSED'],
+    ]);
+    // Причина SKIPPED мусить прийти з ПІДСТАВЛЕНОЇ мапи. Інакше runAll читав би
+    // модульну константу, а підстановка була б декорацією (R-50).
+    expect(results.find((r) => r.id === 'skipped')?.reason).toBe('вигаданої передумови немає');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('runAll: багатобайтовий вивід переживає межі буфера', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-utf8-'));
   try {
