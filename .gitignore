@@ -46,3 +46,9 @@ next-env.d.ts
 # Claude Code: scratch worktrees, and local settings that hold a live token
 /.claude/worktrees/
 /.claude/settings.local.json
+
+# звіти й лічильники шару перевірки
+/.verify/
+
+# трейси невдалих прогонів: R-41 зробив trace 'retain-on-failure'
+/test-results/

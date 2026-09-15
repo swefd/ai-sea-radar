@@ -52,6 +52,13 @@ const needsServer = selected.includes('e2e');
 
 export default defineConfig({
   testDir: './tests',
+  // Playwright транспілює все, до чого дотягнеться його завантажувач. Файл,
+  // дістатий через require(), він примусово вважає commonjs, ІГНОРУЮЧИ
+  // розширення .mjs (esmLoader.js:7660 — перевірка fileIsModule стоїть на
+  // недосяжній гілці тернарника), і Babel опускає ESM у CJS, де import.meta
+  // не існує. Ці файли — звичайний Node ESM, транспілювати в них нічого,
+  // тож вони виключаються з трансформації, і Node вантажить їх сам (R-44).
+  build: { external: ['**/scripts/**/*.mjs', '**/.claude/hooks/**/*.mjs'] },
   fullyParallel: true,
   retries: 0,
   // 'list', а не 'html': вивід читається зі stderr хука, а не з браузера.
