@@ -42,6 +42,12 @@ const selected = selectedProjects(process.argv);
 // завжди передає `--project`, а голий запуск без сервера дасть гучну помилку
 // з'єднання. Варіант «порожній вибір теж піднімає» коштував би dev-сервера на
 // кожному прогоні `unit`, тобто рівно тієї підміни причини, що описана вище.
+// Наслідок, який варто знати: цей модуль argv-залежний, а Playwright
+// перечитує конфіг у воркерах, де `process.argv` інший і `selected` виходить
+// порожнім. Сьогодні це безпечно лише тому, що `webServer` читається в
+// головному процесі, а більше від `selected` не залежить ніщо — тож не робіть
+// від нього залежними `projects` чи `use`, інакше воркер тихо побачить інший
+// конфіг, ніж головний процес (R-42).
 const needsServer = selected.includes('e2e');
 
 export default defineConfig({
@@ -50,7 +56,10 @@ export default defineConfig({
   retries: 0,
   // 'list', а не 'html': вивід читається зі stderr хука, а не з браузера.
   reporter: 'list',
-  use: { trace: 'on-first-retry' },
+  // 'retain-on-failure', а не 'on-first-retry': `retries: 0` вище означає, що
+  // повтору не буде ніколи, тож трейс за 'on-first-retry' не запишеться жодного
+  // разу — і його не було б саме тоді, коли впав `e2e` (R-41).
+  use: { trace: 'retain-on-failure' },
   projects: [
     { name: 'unit', testMatch: 'unit/**/*.spec.ts' },
     {
