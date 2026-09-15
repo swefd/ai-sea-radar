@@ -42,3 +42,7 @@ next-env.d.ts
 
 # study material, not ours and not part of the deliverable (CLAUDE.md)
 /reference/
+
+# Claude Code: scratch worktrees, and local settings that hold a live token
+/.claude/worktrees/
+/.claude/settings.local.json
