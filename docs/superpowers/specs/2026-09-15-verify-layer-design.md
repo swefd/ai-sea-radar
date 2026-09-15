@@ -90,7 +90,8 @@ npm run verify:checkpoint   # full + --no-skip
 
 `scripts/verify/hash.mjs` → `sourceHash(root)` → `{hash, fileCount}`.
 
-- Джерело списку: `git ls-files -c -o --exclude-standard`, звужене до префіксів, що реально годують перевірки: `app/`, `tests/`, `scripts/verify/`, `package.json`, `package-lock.json`, `tsconfig.json`, `next.config.ts`, `eslint.config.mjs`, `playwright.config.ts`.
+- Джерело списку: `git ls-files -c -o --exclude-standard -z`, звужене до префіксів, що реально годують перевірки: `app/`, `tests/`, `scripts/verify/`, `.claude/hooks/`, `package.json`, `package-lock.json`, `tsconfig.json`, `next.config.ts`, `eslint.config.mjs`, `playwright.config.ts`. `.claude/hooks/` входить тому, що зміна хука змінює поведінку перевірки — кеш має протухати й від неї.
+- `-z` обов'язковий: без нього git лапкує й екранує шляхи зі спецсимволами, і список тихо розсинхронізується з диском.
 - Хеш рахується від **вмісту**, не від `mtime` і не від «git status чистий».
 
 Причина категорична: закомічений хід лишає чисте дерево, тож «дерево чисте» видало б зелене вже зламаному коду. `mtime` ламається від `git checkout`, `touch` і відновлення з архіву.
@@ -251,7 +252,7 @@ tests/e2e/                         # порожня; наповнюється н
 
 | Пакет | Версія | Навіщо |
 | --- | --- | --- |
-| `eslint` | `^9` | рядок `lint`. Саме 9.x, хоча остання — 10.x: peer-діапазон `eslint-config-next` це `>= 9`, але протестований конфіг — під 9. Ширший діапазон тут означав би «дозволено», а не «перевірено» |
+| `eslint` | `^9` | рядок `lint`. Саме 9.x, хоча остання — 10.10.0. Власний peer-діапазон `eslint-config-next` (`>= 9`) формально дозволяє 10, але два плагіни, які він тягне залежностями — `eslint-plugin-react@^7.37` (`^3 \|\| … \|\| ^9.7`) і `eslint-plugin-jsx-a11y@^6.10` (`… \|\| ^9`) — **не заявляють `^10`**. Тобто 9.x тут не обережність, а єдиний варіант без peer-конфлікту |
 | `eslint-config-next` | 16.3.5 | точно під `next@16.3.5` |
 | `@playwright/test` | 1.63.x | рядки `unit` і `e2e`; передбачений B-07 |
 
