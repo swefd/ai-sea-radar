@@ -203,7 +203,7 @@ export async function runAll({ checks = CHECKS, root, tier, noSkip, only, timeou
     // Невідомий id — помилка ДАНИХ одного рядка, не аварія прогону. Вона робить
     // UNRUNNABLE цей рядок і не чіпає решти: інакше друкарська помилка в реєстрі
     // стирала б результати всіх, хто вже відбігав.
-    const unknownNeed = check.needs.find((n) => !PRECONDITIONS[n]);
+    const unknownNeed = check.needs.find((n) => !Object.hasOwn(PRECONDITIONS, n));
     if (unknownNeed) { finish('UNRUNNABLE', `невідома передумова в реєстрі: ${unknownNeed}`); continue; }
     const missing = check.needs.find((n) => !PRECONDITIONS[n].probe(root));
     if (missing) { finish('SKIPPED', PRECONDITIONS[missing].describe); continue; }

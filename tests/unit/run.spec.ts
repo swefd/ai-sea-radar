@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
@@ -271,6 +271,7 @@ test('runAll: невідома передумова коштує один ряд
     const checks: Check[] = [
       { id: 'first', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
       { id: 'typo', tier, cmd: 'true', needs: ['передумови-нема'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'proto', tier, cmd: 'true', needs: ['constructor'], after: [], proves: '.', blindSpot: '.' },
       { id: 'third', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
     ];
 
@@ -283,10 +284,14 @@ test('runAll: невідома передумова коштує один ряд
     expect(results.map((r) => [r.id, r.status])).toEqual([
       ['first', 'PASSED'],
       ['typo', 'UNRUNNABLE'],
+      ['proto', 'UNRUNNABLE'],
       ['third', 'PASSED'],
     ]);
     // Причина мусить називати винуватця — інакше шукати доведеться очима.
     expect(results.find((r) => r.id === 'typo')?.reason).toContain('передумови-нема');
+    // `constructor` істинний у будь-якому об'єктному літералі: вартовий, написаний
+    // як `!PRECONDITIONS[n]`, пропустив би його й уронив увесь прогін TypeError.
+    expect(results.find((r) => r.id === 'proto')?.reason).toContain('constructor');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -341,6 +346,13 @@ test('реєстр: id унікальні, tier валідний, посилан
   for (const check of CHECKS) {
     if (check.timeoutMs !== undefined) expect(check.timeoutMs).toBeGreaterThan(0);
   }
+  // Додатність — не все, що обіцяє R-17. Два перекриття по 300 с названі в рішенні
+  // поіменно: холодний `next build` і підйом chromium довші за дефолт. Якби
+  // `build.timeoutMs` став одиницею, рядок став би вічним UNRUNNABLE — тобто виглядав
+  // би як «бігло й не змогло», не пробігши нічого. Пін по id, а не по всіх рядках:
+  // задача 10 додає рядок, не змінюючи таймаут `build`.
+  expect(CHECKS.find((c) => c.id === 'build')?.timeoutMs).toBe(300_000);
+  expect(CHECKS.find((c) => c.id === 'e2e')?.timeoutMs).toBe(300_000);
 });
 
 test('реєстр: у кожного рядка є непорожні proves і blindSpot', () => {
@@ -404,6 +416,10 @@ test('browsersPath: «0» — документоване значення, а н
     process.env.PLAYWRIGHT_BROWSERS_PATH = '/tmp/sea-radar-browsers';
     expect(browsersPath(process.cwd())).toBe('/tmp/sea-radar-browsers');
 
+    // Відносне значення — від кореня перевірки, не від cwd раннера (R-66).
+    process.env.PLAYWRIGHT_BROWSERS_PATH = '.pw-browsers';
+    expect(browsersPath('/tmp/sea-radar-fake-root')).toBe('/tmp/sea-radar-fake-root/.pw-browsers');
+
     // Немає змінної — дефолт платформи, абсолютний.
     delete process.env.PLAYWRIGHT_BROWSERS_PATH;
     const fallback = browsersPath(process.cwd());
@@ -412,5 +428,29 @@ test('browsersPath: «0» — документоване значення, а н
   } finally {
     if (saved === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
     else process.env.PLAYWRIGHT_BROWSERS_PATH = saved;
+  }
+});
+
+test('передумова браузера дивиться в корінь перевірки, а не в теку раннера', async () => {
+  // Проводка виправлення 7, а не сам browsersPath: за R-20 гачок кличе
+  // `run.mjs --root <інше дерево>`, і проба, що читає cwd раннера, відповідала б
+  // про чуже дерево. Помилка невидима: вона дає тихий SKIPPED, не падіння.
+  const fakeRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'sea-radar-pwroot-')));
+  const emptyRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'sea-radar-pwempty-')));
+  const saved = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  try {
+    const pkgDir = path.join(fakeRoot, 'node_modules', 'playwright-core');
+    mkdirSync(path.join(pkgDir, '.local-browsers', 'chromium-1181'), { recursive: true });
+    writeFileSync(path.join(fakeRoot, 'package.json'), '{"name":"fake-root"}');
+    writeFileSync(path.join(pkgDir, 'package.json'), '{"name":"playwright-core","version":"0.0.0"}');
+
+    process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+    expect(PRECONDITIONS['playwright-browser'].probe(fakeRoot)).toBe(true);
+    expect(PRECONDITIONS['playwright-browser'].probe(emptyRoot)).toBe(false);
+  } finally {
+    if (saved === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    else process.env.PLAYWRIGHT_BROWSERS_PATH = saved;
+    rmSync(fakeRoot, { recursive: true, force: true });
+    rmSync(emptyRoot, { recursive: true, force: true });
   }
 });

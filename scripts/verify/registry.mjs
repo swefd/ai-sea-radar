@@ -53,6 +53,8 @@ function defaultBrowsersPath() {
  * робить із нього відносний шлях «0», проба падає й вічно каже «браузера немає».
  * Тихий SKIPPED там, де e2e цілком міг би бігти. Розвʼязання — дослівно як у
  * playwright-core: при "0" це `<корінь пакета playwright-core>/.local-browsers`.
+ * Гілка відносного шляху — свідоме наближення, а не копія: playwright рахує його
+ * від `INIT_CWD || process.cwd()`, ми — від `root`.
  */
 export function browsersPath(root) {
   const fromEnv = process.env.PLAYWRIGHT_BROWSERS_PATH;
@@ -60,7 +62,12 @@ export function browsersPath(root) {
     const requireFrom = createRequire(path.join(root, 'package.json'));
     return path.join(path.dirname(requireFrom.resolve('playwright-core/package.json')), '.local-browsers');
   }
-  if (fromEnv) return fromEnv;
+  // Відносне значення playwright рахує від `INIT_CWD || process.cwd()` процесу,
+  // який запущено з `cwd: root`. Раннер же резолвив би його від власної cwd, а за
+  // R-20 це інша тека. `INIT_CWD` тут не відтворюємо: у кожному шляху, який створює
+  // цей шар, він дорівнює `root`, а точний збіг означав би переписати змінну npm
+  // усередині проби, що відповідає на одне «так/ні».
+  if (fromEnv) return path.resolve(root, fromEnv);
   return defaultBrowsersPath();
 }
 
