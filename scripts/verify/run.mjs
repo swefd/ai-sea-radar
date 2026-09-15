@@ -182,6 +182,19 @@ function runCommand(cmd, root, timeoutMs) {
   });
 }
 
+// Придатна передумова — та, якою можна скористатися ПОВНІСТЮ: і спитати
+// (`probe`), і пояснити відповідь (`describe`). Половина запису з двох полів —
+// помилка даних незалежно від того, яка саме половина написана. Без `probe`
+// нема кого питати; без придатного `describe` рядок стає SKIPPED без причини,
+// а це рівно та форма провалу, від якої побудовано цей шар: зелений вихід і
+// жодного слова про те, що нічого не бігло. Порожній рядок мовчить так само,
+// як відсутній, тому не годиться й він.
+function isUsablePrecondition(precondition) {
+  return typeof precondition?.probe === 'function'
+    && typeof precondition.describe === 'string'
+    && precondition.describe.trim() !== '';
+}
+
 export async function runAll({ checks = CHECKS, preconditions = PRECONDITIONS, root, tier, noSkip, only, timeoutMs }) {
   const ordered = orderChecks(selectChecks(checks, { tier, only }));
   const results = [];
@@ -200,15 +213,39 @@ export async function runAll({ checks = CHECKS, preconditions = PRECONDITIONS, r
     if (brokenDep) { finish('NOT_RUN', `не запускалась: ${brokenDep} → ${statusById.get(brokenDep)}`); continue; }
 
     // 2. Передумови. Про код не говорять НІЧОГО.
-    // Невідомий id — помилка ДАНИХ одного рядка, не аварія прогону. Вона робить
-    // UNRUNNABLE цей рядок і не чіпає решти: інакше друкарська помилка в реєстрі
-    // стирала б результати всіх, хто вже відбігав. Питання саме «чи можна цим
-    // скористатися»: власний ключ зі значенням `undefined`, `null` або з половиною
-    // запису (`describe` без `probe`) — теж помилка даних, і теж вартий одного рядка,
-    // а не TypeError назовні з runAll.
-    const unusableNeed = check.needs.find((n) => typeof preconditions[n]?.probe !== 'function');
-    if (unusableNeed) { finish('UNRUNNABLE', `невідома передумова в реєстрі: ${unusableNeed}`); continue; }
-    const missing = check.needs.find((n) => !preconditions[n].probe(root));
+    // Помилка в даних одного рядка — не аварія прогону: вона робить UNRUNNABLE
+    // цей рядок і не чіпає решти, інакше друкарська помилка в реєстрі стирала б
+    // результати всіх, хто вже відбігав. Питання саме «чи можна цим
+    // скористатися», і воно про ВЕСЬ запис: відсутній ключ, `undefined`, `null`,
+    // будь-яка половина запису з двох полів. Вартовий не вимагає власного ключа —
+    // придатний запис із прототипу теж придатний; `constructor` ловиться не тим,
+    // що він успадкований, а тим, що в нього нема `probe`.
+    // findIndex, а не find: find повернув би сам id, і `needs: ['']` пройшов би
+    // повз вартового хибним значенням.
+    const unusableIdx = check.needs.findIndex((n) => !isUsablePrecondition(preconditions[n]));
+    if (unusableIdx !== -1) {
+      finish('UNRUNNABLE', `непридатна передумова в реєстрі: ${JSON.stringify(check.needs[unusableIdx])}`);
+      continue;
+    }
+
+    // Проба — чужий код, і вона ходить у файлову систему. Питати «чи це функція»
+    // й одразу кликати без сітки — лишити аварію всього прогону на крок глибше.
+    // Обгортки в самому реєстрі не стають зайвими: власний catch проби дає
+    // `false`, тобто SKIPPED з поясненням — кращу відповідь, ніж UNRUNNABLE.
+    // Ця сітка — запобіжник для проб, які свого catch не мають.
+    let failed = null;
+    let missing = null;
+    for (const need of check.needs) {
+      let met;
+      try {
+        met = preconditions[need].probe(root);
+      } catch (probeError) {
+        failed = { need, message: probeError?.message ?? String(probeError) };
+        break;
+      }
+      if (!met) { missing = need; break; }
+    }
+    if (failed) { finish('UNRUNNABLE', `передумова ${failed.need} впала: ${failed.message}`); continue; }
     if (missing) { finish('SKIPPED', preconditions[missing].describe); continue; }
 
     const limit = timeoutMs ?? check.timeoutMs ?? DEFAULT_TIMEOUT_MS;

@@ -308,11 +308,18 @@ test('runAll: несправна передумова коштує один ря
       'є-й-каже-ні': { describe: 'вигаданої передумови немає', probe: () => false },
       'порожня': undefined,
       'недописана': { describe: 'половина запису з двох полів' },
+      'дзеркало': { probe: () => false },
+      'опис-числом': { describe: 42, probe: () => false },
+      'опис-порожній': { describe: '   ', probe: () => false },
     } as unknown as Record<string, Precondition>;
     const checks: Check[] = [
       { id: 'first', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
       { id: 'undef', tier, cmd: 'true', needs: ['порожня'], after: [], proves: '.', blindSpot: '.' },
       { id: 'half', tier, cmd: 'true', needs: ['недописана'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'mirror', tier, cmd: 'true', needs: ['дзеркало'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'numdesc', tier, cmd: 'true', needs: ['опис-числом'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'emptydesc', tier, cmd: 'true', needs: ['опис-порожній'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'blankneed', tier, cmd: 'true', needs: [''], after: [], proves: '.', blindSpot: '.' },
       { id: 'skipped', tier, cmd: 'true', needs: ['є-й-каже-ні'], after: [], proves: '.', blindSpot: '.' },
       { id: 'last', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
     ];
@@ -321,18 +328,78 @@ test('runAll: несправна передумова коштує один ря
       checks, preconditions, root, tier, noSkip: false, only: [], timeoutMs: null,
     });
 
-    // Дві несправні форми коштують по рядку. Ті, хто відбігав до них, лишаються
+    // Шість несправних форм коштують по рядку. Ті, хто відбігав до них, лишаються
     // в результатах, а ті, хто після, — біжать.
     expect(results.map((r) => [r.id, r.status])).toEqual([
       ['first', 'PASSED'],
       ['undef', 'UNRUNNABLE'],
       ['half', 'UNRUNNABLE'],
+      ['mirror', 'UNRUNNABLE'],
+      ['numdesc', 'UNRUNNABLE'],
+      ['emptydesc', 'UNRUNNABLE'],
+      ['blankneed', 'UNRUNNABLE'],
       ['skipped', 'SKIPPED'],
       ['last', 'PASSED'],
     ]);
     // Причина SKIPPED мусить прийти з ПІДСТАВЛЕНОЇ мапи. Інакше runAll читав би
     // модульну константу, а підстановка була б декорацією (R-50).
     expect(results.find((r) => r.id === 'skipped')?.reason).toBe('вигаданої передумови немає');
+    // `blankneed` — єдина з шести форм, чий провал видно ЛИШЕ в тексті причини.
+    // `needs: ['']` дає хибний id, тож `find` віддав би `''`, вартовий мовчки
+    // пропустив би рядок, і зупинила б його аж сітка навколо проби — той самий
+    // UNRUNNABLE, але з чужим поясненням про TypeError. Без цих двох тверджень
+    // реверт `findIndex` → `find` лишається для набору невидимим (R-50).
+    // Лапки — теж предмет: без JSON.stringify порожній id зник би з рядка, і
+    // звіт назвав би непридатну передумову, не назвавши яку.
+    expect(results.find((r) => r.id === 'blankneed')?.reason).toContain('непридатна передумова');
+    expect(results.find((r) => r.id === 'blankneed')?.reason).toContain('""');
+    // Оголошення каже `reason: string` (run.d.mts:18). Єдине, що стоїть між
+    // оголошенням і рантаймом, — рантайм-імпорт із цієї спеки (R-48), тож тип
+    // треба міряти, а не вірити йому. Порожній рядок не рахується: у JSON він
+    // лишає ключ, у тексті друкує тишу — те саме мовчання, що й `undefined`.
+    // Непорожності вимагаємо від рядків, які НЕ бігли: у PASSED пояснювати
+    // нічого, і `classifyExit` віддає там `reason: ''` навмисно (run.mjs:108).
+    for (const r of results) {
+      expect(typeof r.reason).toBe('string');
+      if (r.status !== 'PASSED') expect(r.reason.trim()).not.toBe('');
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runAll: проба, яка кидає, коштує один рядок, а не весь прогін', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-throwprobe-'));
+  try {
+    const tier: Tier = 'fast';
+    // Форма запису бездоганна: рядковий describe, справжня функція probe.
+    // Непридатним його робить лише те, що виклик падає, — а це видно тільки
+    // з виклику. Дві з трьох проб реєстру обгорнуті в try/catch саме тому.
+    const preconditions = {
+      'падуча': {
+        describe: 'сюди не дійде',
+        probe: () => { throw new Error('ENOENT: немає .next'); },
+      },
+    } as unknown as Record<string, Precondition>;
+    const checks: Check[] = [
+      { id: 'first', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+      { id: 'boom', tier, cmd: 'true', needs: ['падуча'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'last', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+    ];
+
+    const results: CheckResult[] = await runAll({
+      checks, preconditions, root, tier, noSkip: false, only: [], timeoutMs: null,
+    });
+
+    expect(results.map((r) => [r.id, r.status])).toEqual([
+      ['first', 'PASSED'],
+      ['boom', 'UNRUNNABLE'],
+      ['last', 'PASSED'],
+    ]);
+    // Причина мусить нести текст самої помилки: інакше рядок каже «не зміг»
+    // і не каже чому, а шукати доведеться очима по всьому реєстру.
+    expect(results.find((r) => r.id === 'boom')?.reason).toContain('ENOENT');
+    expect(results.find((r) => r.id === 'boom')?.reason).toContain('падуча');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
