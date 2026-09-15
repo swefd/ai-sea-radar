@@ -264,7 +264,7 @@ test('runAll: чотири статуси на чужому реєстрі — �
   }
 });
 
-test('runAll: невідома передумова коштує один рядок, а не весь прогін', async () => {
+test('runAll: непридатна передумова коштує один рядок, а не весь прогін', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-badneed-'));
   try {
     const tier: Tier = 'fast';
@@ -292,6 +292,12 @@ test('runAll: невідома передумова коштує один ряд
     // `constructor` істинний у будь-якому об'єктному літералі: вартовий, написаний
     // як `!PRECONDITIONS[n]`, пропустив би його й уронив увесь прогін TypeError.
     expect(results.find((r) => r.id === 'proto')?.reason).toContain('constructor');
+    // Статус тут почервоніти вже не може: сітка навколо проби ловить TypeError і
+    // теж малює UNRUNNABLE, а її текст несе той самий id. Тож вартового від сітки
+    // відрізняє ЛИШЕ причина: без вартового рядок починався б зі слова
+    // «передумова», а не «непридатна передумова» (R-71).
+    expect(results.find((r) => r.id === 'typo')?.reason).toContain('непридатна передумова');
+    expect(results.find((r) => r.id === 'proto')?.reason).toContain('непридатна передумова');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -353,6 +359,10 @@ test('runAll: несправна передумова коштує один ря
     // звіт назвав би непридатну передумову, не назвавши яку.
     expect(results.find((r) => r.id === 'blankneed')?.reason).toContain('непридатна передумова');
     expect(results.find((r) => r.id === 'blankneed')?.reason).toContain('""');
+    // Те саме розрізнення для двох форм, де ключ є, а запис половинчастий:
+    // статус їм намалювала б і сітка навколо проби, причина — ні (R-71).
+    expect(results.find((r) => r.id === 'undef')?.reason).toContain('непридатна передумова');
+    expect(results.find((r) => r.id === 'half')?.reason).toContain('непридатна передумова');
     // Оголошення каже `reason: string` (run.d.mts:18). Єдине, що стоїть між
     // оголошенням і рантаймом, — рантайм-імпорт із цієї спеки (R-48), тож тип
     // треба міряти, а не вірити йому. Порожній рядок не рахується: у JSON він
@@ -380,10 +390,16 @@ test('runAll: проба, яка кидає, коштує один рядок, �
         describe: 'сюди не дійде',
         probe: () => { throw new Error('ENOENT: немає .next'); },
       },
+      // Помилка з порожнім `message` — не екзотика, а звичайний `throw new Error()`.
+      'падуча-без-слів': {
+        describe: 'сюди теж не дійде',
+        probe: () => { throw new Error(''); },
+      },
     } as unknown as Record<string, Precondition>;
     const checks: Check[] = [
       { id: 'first', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
       { id: 'boom', tier, cmd: 'true', needs: ['падуча'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'mute', tier, cmd: 'true', needs: ['падуча-без-слів'], after: [], proves: '.', blindSpot: '.' },
       { id: 'last', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
     ];
 
@@ -394,12 +410,85 @@ test('runAll: проба, яка кидає, коштує один рядок, �
     expect(results.map((r) => [r.id, r.status])).toEqual([
       ['first', 'PASSED'],
       ['boom', 'UNRUNNABLE'],
+      ['mute', 'UNRUNNABLE'],
       ['last', 'PASSED'],
     ]);
     // Причина мусить нести текст самої помилки: інакше рядок каже «не зміг»
     // і не каже чому, а шукати доведеться очима по всьому реєстру.
     expect(results.find((r) => r.id === 'boom')?.reason).toContain('ENOENT');
     expect(results.find((r) => r.id === 'boom')?.reason).toContain('падуча');
+    // Лапки — теж предмет, і не лише у вартового: id із самих пробілів або
+    // порожній зник би з тексту сітки, і звіт назвав би передумову, не назвавши
+    // яку. Без цього твердження реверт `JSON.stringify` на run.mjs:268
+    // лишається для набору невидимим (R-50).
+    expect(results.find((r) => r.id === 'boom')?.reason).toContain('"падуча"');
+    // `new Error('')` має `message`, і він порожній: `??` його не відкине, і
+    // причина звелася б до префікса «проба впала: » — рядка, який каже «не зміг»
+    // і не каже чому. Цикл непорожності це пропускає, бо префікс непорожній,
+    // тож єдине, що ловить `??` замість `||`, — саме це твердження (R-50).
+    expect(results.find((r) => r.id === 'mute')?.reason).toContain('Error');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runAll: проба-обіцянка не стає мовчазним PASSED', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-asyncprobe-'));
+  try {
+    const tier: Tier = 'fast';
+    // Форма запису бездоганна, функція справжня, describe рядковий. Непридатна
+    // сама ВІДПОВІДЬ: обіцянка істинна завжди, тож `if (!met)` не спрацює.
+    const preconditions = {
+      'обіцяє-ні': { describe: 'сюди не дійде', probe: async () => false },
+      'обіцяє-впасти': {
+        describe: 'сюди теж не дійде',
+        probe: async () => { throw new Error('ENOENT async'); },
+      },
+    } as unknown as Record<string, Precondition>;
+    const checks: Check[] = [
+      { id: 'first', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+      { id: 'asyncfalse', tier, cmd: 'true', needs: ['обіцяє-ні'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'asyncthrow', tier, cmd: 'true', needs: ['обіцяє-впасти'], after: [], proves: '.', blindSpot: '.' },
+      { id: 'last', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+    ];
+
+    const results: CheckResult[] = await runAll({
+      checks, preconditions, root, tier, noSkip: false, only: [], timeoutMs: null,
+    });
+
+    // `asyncfalse` НЕ має бути PASSED: передумова сказала «ні», просто сказала
+    // це обіцянкою. Зелене тут було б саме тим провалом, проти якого весь шар.
+    expect(results.map((r) => [r.id, r.status])).toEqual([
+      ['first', 'PASSED'],
+      ['asyncfalse', 'UNRUNNABLE'],
+      ['asyncthrow', 'UNRUNNABLE'],
+      ['last', 'PASSED'],
+    ]);
+    // Причина мусить назвати саме форму відповіді — інакше той, хто читає звіт,
+    // шукатиме несправний запис, а несправна відповідь.
+    expect(results.find((r) => r.id === 'asyncfalse')?.reason).toContain('обіцянка');
+    expect(results.find((r) => r.id === 'asyncfalse')?.reason).toContain('обіцяє-ні');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runAll: рядок без поля needs не роняє прогін', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-noneeds-'));
+  try {
+    const tier: Tier = 'fast';
+    // Поля нема зовсім — TypeScript це заборонив би, правка руками створює.
+    const checks = [
+      { id: 'first', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+      { id: 'noneeds', tier, cmd: 'true', after: [], proves: '.', blindSpot: '.' },
+      { id: 'last', tier, cmd: 'true', needs: [], after: [], proves: '.', blindSpot: '.' },
+    ] as unknown as Check[];
+
+    const results: CheckResult[] = await runAll({
+      checks, root, tier, noSkip: false, only: [], timeoutMs: null,
+    });
+
+    expect(results.map((r) => r.id)).toEqual(['first', 'noneeds', 'last']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

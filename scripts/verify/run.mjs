@@ -222,7 +222,10 @@ export async function runAll({ checks = CHECKS, preconditions = PRECONDITIONS, r
     // що він успадкований, а тим, що в нього нема `probe`.
     // findIndex, а не find: find повернув би сам id, і `needs: ['']` пройшов би
     // повз вартового хибним значенням.
-    const unusableIdx = check.needs.findIndex((n) => !isUsablePrecondition(preconditions[n]));
+    // `?? []`: рядок без поля `needs` — теж помилка даних, і вона не має роняти
+    // прогін. TypeScript поле вимагає, правка руками в `registry.mjs` його
+    // забуває; без цього `findIndex` кидає TypeError із самого раннера.
+    const unusableIdx = (check.needs ?? []).findIndex((n) => !isUsablePrecondition(preconditions[n]));
     if (unusableIdx !== -1) {
       finish('UNRUNNABLE', `непридатна передумова в реєстрі: ${JSON.stringify(check.needs[unusableIdx])}`);
       continue;
@@ -235,17 +238,34 @@ export async function runAll({ checks = CHECKS, preconditions = PRECONDITIONS, r
     // Ця сітка — запобіжник для проб, які свого catch не мають.
     let failed = null;
     let missing = null;
-    for (const need of check.needs) {
+    for (const need of check.needs ?? []) {
       let met;
       try {
         met = preconditions[need].probe(root);
       } catch (probeError) {
-        failed = { need, message: probeError?.message ?? String(probeError) };
+        // `||`, не `??`: `new Error('')` має message, і він порожній. `??`
+        // віддав би порожню причину, а цикл непорожності її пропустив би —
+        // префікс же непорожній. Рядок, який каже «не зміг» і не каже чому,
+        // нічим не кращий за мовчання.
+        failed = { need, reason: `проба впала: ${probeError?.message || String(probeError)}` };
+        break;
+      }
+      // Відповідь буває непридатною так само, як запис. `async probe` віддає
+      // обіцянку, а вона істинна ЗАВЖДИ: проба, що вирішилася в `false`, дала б
+      // PASSED там, де належав SKIPPED, — зелене, якого ніхто не заслужив.
+      // Відхилення ж не є синхронним киданням, тож catch вище його не бачить
+      // і прогін гине цілком. Тому питаємо булеве, а не істинне.
+      if (typeof met !== 'boolean') {
+        const shape = met && typeof met.then === 'function' ? 'обіцянка' : typeof met;
+        // Хвіст обіцянки гасимо: відхилення без обробника вбиває процес Node
+        // пізніше й поза цим рядком — тобто знову коштувало б усього прогону.
+        if (shape === 'обіцянка') met.then(() => {}, () => {});
+        failed = { need, reason: `проба відповіла не булевим значенням (${shape})` };
         break;
       }
       if (!met) { missing = need; break; }
     }
-    if (failed) { finish('UNRUNNABLE', `передумова ${failed.need} впала: ${failed.message}`); continue; }
+    if (failed) { finish('UNRUNNABLE', `передумова ${JSON.stringify(failed.need)} — ${failed.reason}`); continue; }
     if (missing) { finish('SKIPPED', preconditions[missing].describe); continue; }
 
     const limit = timeoutMs ?? check.timeoutMs ?? DEFAULT_TIMEOUT_MS;
