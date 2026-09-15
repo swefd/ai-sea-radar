@@ -36,6 +36,12 @@ export const SOURCE_FILES = [
   '.claude/settings.json',
 ];
 
+// U+FFFD REPLACEMENT CHARACTER — зібраний із коду, а не вписаний літерою:
+// сам символ у джерелі виглядає як збите кодування, тобто як рівно та
+// поломка, яку він і ловить, і будь-яке перезбереження файлу зіпсувало б його
+// мовчки.
+const REPLACEMENT_CHARACTER = String.fromCharCode(0xfffd);
+
 export function isSourcePath(relPath) {
   return SOURCE_PREFIXES.some((prefix) => relPath.startsWith(prefix))
     || SOURCE_FILES.includes(relPath);
@@ -43,18 +49,38 @@ export function isSourcePath(relPath) {
 
 export function listSourceFiles(root) {
   // -c: відстежувані, -o: невідстежувані, --exclude-standard: поважати .gitignore.
-  // -z обов'язковий: без нього git лапкує шляхи зі спецсимволами, і список
-  // тихо розсинхронізується з диском.
+  // -z дає рівно одне: шляхи з пробілами, лапками чи переводами рядка
+  // переживають розбиття цілими — без нього git їх лапкує й екранує, і
+  // розділити вивід назад на справжні імена вже неможливо.
+  // stdio задано явно: без нього stderr git'а протікає в батьківський процес,
+  // а з задачі 3 це вивід самого шару перевірки.
   const raw = execFileSync(
     'git',
     ['ls-files', '-c', '-o', '--exclude-standard', '-z'],
-    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
   );
 
-  return raw
-    .split('\0')
-    .filter((relPath) => relPath !== '' && isSourcePath(relPath))
-    .sort();
+  const entries = raw.split('\0');
+
+  // Шлях із невалідним UTF-8 декодується в U+FFFD, далі readFileSync дає
+  // ENOENT, і файл тихо стає `<missing>` — тобто хеш мовчки бреше. У цьому
+  // репозиторії таких імен немає; якщо колись з'являться, краще впасти
+  // голосно, ніж повернути правдоподібний хеш (R-50).
+  for (const relPath of entries) {
+    if (relPath.includes(REPLACEMENT_CHARACTER)) {
+      throw new Error(
+        `listSourceFiles: шлях не є валідним UTF-8 і декодувався з втратою: ${relPath}`,
+      );
+    }
+  }
+
+  // Під час конфлікту `-c` віддає по рядку на кожну стадію того самого шляху,
+  // тож без Set файл хешувався б кілька разів, а fileCount роздувався б.
+  return [
+    ...new Set(
+      entries.filter((relPath) => relPath !== '' && isSourcePath(relPath)),
+    ),
+  ].sort();
 }
 
 export function sourceHash(root) {
