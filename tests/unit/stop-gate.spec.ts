@@ -326,13 +326,20 @@ interface GateRun {
 }
 
 /**
- * Запуск гейта в пробному дереві. `cwd` і `CLAUDE_PROJECT_DIR` вказують на те
- * саме дерево НАВІТЬ тоді, коли вхідний JSON кореня не називає, і це не
- * надмірність: варта не-об'єкта стоїть до вибору кореня, тож мутація, яка її
- * прибирає, відправляє гейт запасним шляхом — у СПРАВЖНІЙ репозиторій. Під час
- * ревю саме цей шлях записав `.verify/gate-counter/unknown` у робоче дерево й
- * вибив 60-секундний таймаут. Тест, герметичний лише поки реалізація правильна,
- * герметичний рівно тоді, коли він не потрібен.
+ * Запуск гейта в пробному дереві. Два рішення тут несучі, і вони тягнуть у різні
+ * боки, тож обидва записані.
+ *
+ * `CLAUDE_PROJECT_DIR` вказує на пробне дерево — заради ГЕРМЕТИЧНОСТІ: варта
+ * не-об'єкта стоїть до вибору кореня, тож мутація, яка її прибирає, відправляє
+ * гейт запасним шляхом. Під час ревю саме цей шлях записав
+ * `.verify/gate-counter/unknown` у робоче дерево й вибив 60-секундний таймаут.
+ * Тест, герметичний лише поки реалізація правильна, герметичний рівно тоді, коли
+ * він не потрібен.
+ *
+ * `cwd` натомість НАВМИСНО чуже дерево — заради R-20: поле `cwd` вхідного JSON
+ * має лишатися ЄДИНИМ джерелом кореня. Коли всі три джерела вказували в одне
+ * місце, мутація «ігнорувати `input.cwd`, брати `process.cwd()`» — те саме, що
+ * шапка хука називає «гірше за відсутність гейту» — проходила всі 202 тести.
  */
 function runGate(
   root: string,
@@ -347,7 +354,7 @@ function runGate(
   const result = spawnSync(process.execPath, [script], {
     encoding: 'utf8',
     input: text,
-    cwd: root,
+    cwd: tmpdir(),
     env: { ...process.env, CLAUDE_PROJECT_DIR: root },
   });
   if (result.error) throw result.error;
@@ -583,12 +590,15 @@ test('причина блокування тримає байтовий бюдж
  */
 test('зависле читання stdin не вважається порожнім входом', async () => {
   const root = makeProbeRoot(fakeRunner(envelope(RED), 1));
+  // `cwd` — чуже дерево, як і в `runGate`; пробне дерево дістається лише через
+  // $CLAUDE_PROJECT_DIR, тож твердження «раннера не кликали» лишається змістовним:
+  // регресія, яка пройшла б повз таймаут, знайшла б раннер і лишила маркер.
+  const child = spawn(process.execPath, [HOOK], {
+    cwd: tmpdir(),
+    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
   try {
-    const child = spawn(process.execPath, [HOOK], {
-      cwd: root,
-      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
     let stdout = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => { stdout += chunk; });
@@ -602,6 +612,9 @@ test('зависле читання stdin не вважається порожн
     // Раннера не кликали: без входу невідомо навіть, яке дерево перевіряти.
     expect(existsSync(path.join(root, 'runner-ran.txt'))).toBe(false);
   } finally {
+    // Регресія, що підвісить гейт, інакше лишила б процес жити до таймауту
+    // Playwright — а ця сюїта вже одного разу лишала сліди поза собою.
+    child.kill();
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -609,15 +622,10 @@ test('зависле читання stdin не вважається порожн
 test('без поля cwd гейт не мовчить навіть на зеленому — і називає взяте дерево', () => {
   const root = makeProbeRoot(fakeRunner(envelope(GREEN)));
   try {
-    const result = spawnSync(process.execPath, [HOOK], {
-      encoding: 'utf8',
-      input: JSON.stringify({ session_id: 's-1', prompt_id: 'p-1', hook_event_name: 'Stop' }),
-      cwd: root,
-      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
-    });
-    expect(result.status).toBe(0);
-    expect(systemMessage(result.stdout)).toContain('CLAUDE_PROJECT_DIR');
-    expect(systemMessage(result.stdout)).toContain(root);
+    const run = runGate(root, { session_id: 's-1', prompt_id: 'p-1', hook_event_name: 'Stop' });
+    expect(run.status).toBe(0);
+    expect(systemMessage(run.stdout)).toContain('CLAUDE_PROJECT_DIR');
+    expect(systemMessage(run.stdout)).toContain(root);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
