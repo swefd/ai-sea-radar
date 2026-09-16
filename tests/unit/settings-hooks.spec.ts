@@ -126,7 +126,13 @@ for (const event of ['PostToolUse', 'Stop'] as const) {
     // Слово зі скісною рискою — це шлях; решта (майбутні прапорці) не обходить.
     const paths = commandOf(event).split(/\s+/).filter((word) => word.includes('/'));
     expect(paths.length).toBeGreaterThanOrEqual(2); // резолвер і скрипт
-    for (const p of paths) expect(p).toMatch(/^"?\$\{?CLAUDE_PROJECT_DIR\}?/);
+    // Лапка ОБОВ'ЯЗКОВА, і це не про стиль. Виміряно на корені з пробілом
+    // (`/Users/me/My Projects/sea-radar`): без лапок `sh` дає `argc=4` і перший
+    // аргумент `/Users/me/My`, тобто хук стартує з обрізаним шляхом і мовчки гине.
+    // З лапками — `argc=2` в обох прийнятих формах. Тут ця перевірка ще й
+    // машинонезалежна: у цьому корені пробілу немає, тож без лапки вона була б
+    // зеленою рівно через властивість дерева, а не коду.
+    for (const p of paths) expect(p).toMatch(/^"\$\{?CLAUDE_PROJECT_DIR\}?/);
   });
 
   test(`команда ${event} розкривається в абсолютні шляхи до наявних файлів`, () => {
