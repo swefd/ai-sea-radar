@@ -1660,31 +1660,29 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 Створити `tests/unit/check-deps-allowlist.spec.ts`:
 
 ```ts
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { test, expect } from '@playwright/test';
 
 import { auditDependencies } from '../../scripts/verify/checks/deps-allowlist.mjs';
 
-const current = {
-  dependencies: { next: '16.3.5', react: '19.3.0', 'react-dom': '19.3.0' },
-  devDependencies: {
-    '@types/node': '24.13.4',
-    '@types/react': '19.3.0',
-    typescript: '6.0.3',
-    eslint: '9.39.5',
-    'eslint-config-next': '16.3.5',
-    '@playwright/test': '1.63.0',
-  },
-};
+/**
+ * Читається з диска, а не з фікстури. Фікстура застигає: поки писався цей
+ * план, B-02 додав leaflet, і захардкоджений «поточний набір» одразу став
+ * не поточним, мовчки лишившись зеленим.
+ */
+const current = JSON.parse(
+  readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+);
 
-test('поточний набір проєкту чистий', () => {
+test('справжній package.json проєкту чистий', () => {
   expect(auditDependencies(current)).toEqual([]);
 });
 
-test('leaflet дозволений заздалегідь — SPRINT-01 фіксує його в стеку', () => {
+test('leaflet і @types/leaflet дозволені — SPRINT-01 фіксує Leaflet у стеку', () => {
   const withLeaflet = {
-    ...current,
     dependencies: { ...current.dependencies, leaflet: '1.9.4' },
-    devDependencies: { ...current.devDependencies, '@types/leaflet': '1.9.12' },
+    devDependencies: { ...current.devDependencies, '@types/leaflet': '1.9.22' },
   };
   expect(auditDependencies(withLeaflet)).toEqual([]);
 });
