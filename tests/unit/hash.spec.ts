@@ -43,7 +43,7 @@ function makeRepo(): string {
   return root;
 }
 
-test('isSourcePath приймає префікси та точні імена, відкидає решту', () => {
+test('isSourcePath покриває кожен названий периметр — підлога закріплена поіменно', () => {
   expect(isSourcePath('app/page.tsx')).toBe(true);
   // Головний код застосунку — під src/. Якби цього рядка не було, дефект
   // SOURCE_PREFIXES пройшов би повз усі п'ять тестів.
@@ -67,8 +67,28 @@ test('isSourcePath приймає префікси та точні імена, �
   expect(isSourcePath('next.config.ts')).toBe(true);
   expect(isSourcePath('eslint.config.mjs')).toBe(true);
   expect(isSourcePath('playwright.config.ts')).toBe(true);
-  expect(isSourcePath('README.md')).toBe(false);
-  expect(isSourcePath('docs/tasks/SPRINT-01.md')).toBe(false);
+
+  // Підлога: КОЖЕН запис кожного переліку мусить бути всередині периметра.
+  // Предикат їх більше не питає (раунд 2), тож без цього циклу звуження
+  // периметра лишилося б мовчазним — а саме звуження й повертає протухле зелене.
+  for (const prefix of SOURCE_PREFIXES) {
+    expect(isSourcePath(`${prefix}проба.txt`), `поза периметром: ${prefix}`).toBe(true);
+  }
+  for (const file of SOURCE_FILES) {
+    expect(isSourcePath(file), `поза периметром: ${file}`).toBe(true);
+  }
+  for (const extension of SOURCE_EXTENSIONS) {
+    expect(isSourcePath(`будь-де/проба${extension}`), `поза периметром: ${extension}`).toBe(true);
+  }
+
+  // Периметр `no-secrets` — уся передача, тож .md і .txt тепер теж усередині.
+  // До раунду 2 обидва рядки стверджували `false`, і саме тому секрет у
+  // `docs/*.md` лишав хеш незмінним.
+  expect(isSourcePath('README.md')).toBe(true);
+  expect(isSourcePath('docs/tasks/SPRINT-01.md')).toBe(true);
+  // Поза передачею — поза периметром: цього git не віддає нікому.
+  expect(isSourcePath('node_modules/leaflet/index.js')).toBe(false);
+  expect(isSourcePath('reference/geodesy/latlon-spherical.js')).toBe(false);
 });
 
 test('периметр — рішення, а не випадковість: обидва списки закріплено поіменно', () => {
@@ -118,10 +138,23 @@ test('периметр покриває те, що перевіряє tsc: ко�
   // Виключення дзеркалять `exclude` у tsconfig.json — і тільки їх.
   expect(isSourcePath('node_modules/leaflet/index.d.ts')).toBe(false);
   expect(isSourcePath('reference/geodesy/latlon.ts')).toBe(false);
-  // Не-TypeScript поза префіксами як не входив, так і не входить: розширення
-  // периметра рівно до того, що читає tsc, і ані на файл більше.
-  expect(isSourcePath('docs/tasks/SPRINT-01.md')).toBe(false);
-  expect(isSourcePath('README.md')).toBe(false);
+});
+
+test('периметр покриває й те, що читає no-secrets: секрет у docs міняє хеш', () => {
+  // Виміряно до раунду 2: файл у `docs/` лишав хеш побайтово тим самим
+  // (`d173ce0b…`, 52 файли — до й після), тимчасом як `no-secrets` читає всі
+  // 114 відданих файлів. У парі з пропущеною формою ключа це означало зелене
+  // над деревом, у яке щойно ліг секрет.
+  const root = makeRepo();
+  try {
+    const before = sourceHash(root).hash;
+    mkdirSync(path.join(root, 'docs'), { recursive: true });
+    writeFileSync(path.join(root, 'docs/нотатка.md'), '# текст\n');
+    expect(sourceHash(root).hash).not.toBe(before);
+    expect(sourceHash(root).files).toContain('docs/нотатка.md');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('кореневий .ts змінює хеш — інакше гейт відтворює зелене поверх зламаного', () => {
@@ -137,24 +170,52 @@ test('кореневий .ts змінює хеш — інакше гейт ві�
   }
 });
 
-test('listSourceFiles бере джерельні файли, ігнорує gitignored і не-джерельні', () => {
+test('listSourceFiles бере всю передачу й ігнорує gitignored', () => {
   const root = makeRepo();
   try {
+    // README.md і .gitignore тут не випадковість, а суть раунду 2: їх читає
+    // `no-secrets`, тож вони входять у ключ свіжості. `secret.txt` не входить —
+    // він у .gitignore, тобто клієнтові не передається зовсім.
     expect(listSourceFiles(root)).toEqual([
+      '.gitignore',
+      'README.md',
       'app/page.tsx',
       'package.json',
       'src/_pages/home/ui/home-page.tsx',
     ]);
+    expect(listSourceFiles(root)).not.toContain('secret.txt');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('listRepoFiles віддає весь периметр передачі, а не лише джерела', () => {
+test('симлінк на теку в передачі не валить хеш і хешується своєю ціллю', () => {
+  // Знайдено розширенням периметра: до раунду 2 голий `node_modules` (симлінк,
+  // без скісної риски в кінці) під префікс `node_modules/` не підпадав і в
+  // периметр не входив. Тепер входить — і `readFileSync` іде за симлінком у
+  // теку, дістаючи EISDIR. Дерево з таким записом цілком законне: git зберігає
+  // симлінк як рядок його цілі.
+  const root = makeRepo();
+  try {
+    symlinkSync(path.join(root, 'app'), path.join(root, 'посилання'));
+    const withLink = sourceHash(root).hash; // не кидає — саме це й перевіряється
+    expect(sourceHash(root).files).toContain('посилання');
+
+    // Ціль — частина хеша, а не декорація: перецілений симлінк мусить його змінити.
+    rmSync(path.join(root, 'посилання'));
+    symlinkSync(path.join(root, 'src'), path.join(root, 'посилання'));
+    expect(sourceHash(root).hash).not.toBe(withLink);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('listRepoFiles віддає весь периметр передачі', () => {
   const root = makeRepo();
   try {
     const all = listRepoFiles(root);
-    // Ширше за listSourceFiles: README.md — переданий файл, але не джерело.
+    // README.md — переданий файл. З раундом 2 він і в периметрі свіжості теж:
+    // його читає `no-secrets`. Раніше цей рядок протиставляв два переліки.
     expect(all).toContain('README.md');
     expect(all).toContain('app/page.tsx');
     // .gitignore поважається: ігноровані файли не передаються й тут не з'являються.

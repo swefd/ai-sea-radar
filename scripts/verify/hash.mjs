@@ -3,10 +3,16 @@
 // лишає чисте дерево, тобто видав би зелене вже зламаному коду).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readlinkSync } from 'node:fs';
 import path from 'node:path';
 
 import { isEntryPoint } from './entry-point.mjs';
+
+// ПІДЛОГА ПЕРИМЕТРА, а не сам периметр. Три переліки нижче називають, що читає
+// кожен рядок реєстру окремо; `isSourcePath` їх більше не питає, бо з раундом 2
+// периметр ширший за кожен із них (пояснення — там). Лишаються вони тому, що
+// тест вимагає покриття кожного запису: звуження периметра має червоніти
+// поіменно, а не мовчки.
 
 /** Теки, вміст яких годує перевірки. */
 export const SOURCE_PREFIXES = [
@@ -78,12 +84,30 @@ export const NON_SOURCE_PREFIXES = ['node_modules/', 'reference/'];
 // мовчки.
 const REPLACEMENT_CHARACTER = String.fromCharCode(0xfffd);
 
+/**
+ * Чи входить шлях у периметр свіжості?
+ *
+ * Периметр — ОБ'ЄДНАННЯ периметрів рядків реєстру, і з раундом 2 це об'єднання
+ * дорівнює всій передачі. Причина не в бажанні охопити більше, а в вимірі:
+ * `no-secrets` читає КОЖЕН відданий файл (108 текстових + 4 бінарних + 2 поза
+ * периметром = 114 = `git ls-files -c -o --exclude-standard | wc -l`), тож
+ * секрет, що потрапив у `docs/*.md`, лишав хеш незмінним — і гейт міг
+ * відтворити зелене над деревом, у яке щойно ліг ключ.
+ *
+ * Три переліки вище предикат більше не питає, і це свідомо. Вони лишаються
+ * названими з двох причин: кожен документує, що саме читає СВІЙ рядок реєстру,
+ * і тест у `hash.spec.ts` вимагає, щоб периметр покривав кожен їхній запис, —
+ * тобто майбутнє звуження периметра буде червоним, а не мовчазним. Перелік без
+ * тесту був би мертвим кодом; перелік із тестом — це підлога.
+ *
+ * Ціна виміряна й названа: повний fast-прогін — 8,66 с, відтворений із кеша —
+ * 0,06 с, тобто кожне зайве протухання коштує ~8,6 с. Периметр виріс із 52
+ * файлів до 114.
+ */
 export function isSourcePath(relPath) {
-  // Виключення — перші: те, чого tsc не читає, не змінює його вердикту.
-  if (NON_SOURCE_PREFIXES.some((prefix) => relPath.startsWith(prefix))) return false;
-  return SOURCE_PREFIXES.some((prefix) => relPath.startsWith(prefix))
-    || SOURCE_FILES.includes(relPath)
-    || SOURCE_EXTENSIONS.includes(path.extname(relPath));
+  // Єдине звуження: те, чого в передачі немає й бути не може. Обидва префікси
+  // й так ігноруються git-ом, тож це варта, а не фільтр.
+  return !NON_SOURCE_PREFIXES.some((prefix) => relPath.startsWith(prefix));
 }
 
 /**
@@ -150,13 +174,30 @@ export function sourceHash(root) {
     try {
       contents = readFileSync(path.join(root, relPath));
     } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      // R-05. Файл зник між переліком і читанням. Сентинел стоїть на місці
-      // довжини, а не на місці вмісту: файл, який реально містить рядок
-      // `<missing>`, має власну byteLength і тому дає інший потік.
-      digest.update('<missing>');
-      digest.update('\0');
-      continue;
+      if (error.code === 'ENOENT') {
+        // R-05. Файл зник між переліком і читанням. Сентинел стоїть на місці
+        // довжини, а не на місці вмісту: файл, який реально містить рядок
+        // `<missing>`, має власну byteLength і тому дає інший потік.
+        digest.update('<missing>');
+        digest.update('\0');
+        continue;
+      }
+      if (error.code === 'EISDIR') {
+        // Симлінк на теку. Це законний вміст передачі — git зберігає симлінк як
+        // РЯДОК його цілі й не заходить усередину, — але `readFileSync` іде за
+        // ним і впирається в теку. До розширення периметра такий запис у нього
+        // не потрапляв; тепер потрапляє, тож хешується те саме, що віддає git:
+        // сама ціль. Інакше цілком легальне дерево валило б `sourceHash`.
+        //
+        // Сентинел, як і `<missing>`, стоїть на місці довжини: файл із текстом
+        // цілі всередині дає інший потік, ніж симлінк на ту саму ціль.
+        digest.update('<symlink>');
+        digest.update('\0');
+        digest.update(readlinkSync(path.join(root, relPath)));
+        digest.update('\0');
+        continue;
+      }
+      throw error;
     }
     // R-05: потік — `path \0 byteLength \0 content`. Довжина перед вмістом
     // обов'язкова: без неї два різні розбиття тих самих байтів між двома

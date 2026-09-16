@@ -33,6 +33,20 @@ const SYNTHETIC = ['AKIA', 'N'.repeat(8), 'OTREAL00'].join('');
 // нулі знахідок. Виміряно контролером до диспетчу (R-104).
 const SYNTHETIC_URL = ['https', '://', 'ci', ':', 'q'.repeat(24), '@', 'registry.example/next.tgz'].join('');
 
+/**
+ * Синтетичний ключ із літеральним префіксом. Зібраний із частин (R-13), як і
+ * два вище: цілого літерала у файлі немає, тож grep по тестах не знайде нічого
+ * схожого на ключ. Набивка навмисно безглузда — це форма, а не значення.
+ */
+const SYNTHETIC_SK = ['sk', '-', 'a7Kq2mZr', '9Tb4Xw1N', 'v6Hs3Lp8'].join('');
+
+/**
+ * Той самий розмір, але БЕЗ префікса: ним перевіряється виправлення межі слова
+ * окремо від виправлення префікса. Тест, що спирався б лише на `sk-`, лишався б
+ * зеленим із поламаною межею (R-123).
+ */
+const SYNTHETIC_PLAIN = ['Zx9Qw2Er', '4Ty6Ui8O', 'p0As1Df3'].join('');
+
 const CLEAN_FILES: Record<string, string> = {
   '.gitignore': '.env*\n',
   'package.json': '{"name":"t"}\n',
@@ -317,6 +331,54 @@ test('файл, що зник між переліком і читанням, р�
     expect(runCheck(CHECK, clean).stdout).not.toContain('зникло під час читання');
   } finally {
     removeFixture(clean);
+    removeFixture(root);
+  }
+});
+
+test('гола форма ключа з префіксом ловиться без слова-якоря поруч', () => {
+  // Виміряно на наборі до цього раунду: `const a = "<ключ>"` не давався
+  // ЖОДНОМУ шаблону — шаблону з префіксом у наборі не було взагалі. А саме в
+  // таку змінну ключ і потрапляє, коли його кудись копіюють.
+  const found = scanLine(`const a = "${SYNTHETIC_SK}";`);
+  expect(found.map((item) => item.pattern)).toContain('sk-prefixed-key');
+  // Правило звіту тримається: метадані, не збіг.
+  expect(JSON.stringify(found)).not.toContain(SYNTHETIC_SK);
+});
+
+test('підкреслення перед словом-якорем більше не ховає ключ', () => {
+  // `_` — символ слова, тож `\b` перед `TOKEN` у `ANTHROPIC_AUTH_TOKEN` не
+  // існує, і шаблон мовчав. Це дослівна форма живого токена в
+  // `.claude/settings.local.json` цього репозиторію.
+  //
+  // Ключ тут БЕЗ префікса навмисно: інакше тест зеленів би від `sk-prefixed-key`
+  // і нічого не казав про межу слова.
+  const found = scanLine(`  ANTHROPIC_AUTH_TOKEN: "${SYNTHETIC_PLAIN}",`);
+  expect(found.map((item) => item.pattern)).toContain('assigned-secret');
+  expect(JSON.stringify(found)).not.toContain(SYNTHETIC_PLAIN);
+});
+
+test('закривна лапка перед двокрапкою (JSON) більше не ховає ключ', () => {
+  // `"API_KEY": "<ключ>"` — між словом-якорем і роздільником стоїть лапка, і
+  // шаблон вимагав `:` одразу після слова. Причина інша, ніж у тесті вище, тож
+  // і форма інша: тут межа слова була в порядку, ламала саме лапка.
+  const found = scanLine(`  "API_KEY": "${SYNTHETIC_PLAIN}"`);
+  expect(found.map((item) => item.pattern)).toContain('assigned-secret');
+});
+
+test('форма живого токена ловиться наскрізь, а не лише в scanLine', () => {
+  const root = makeFixtureRepo({
+    ...CLEAN_FILES,
+    'probe-settings.json': `{\n  "env": {\n    "ANTHROPIC_AUTH_TOKEN": "${SYNTHETIC_SK}"\n  }\n}\n`,
+  });
+  try {
+    const { findings } = scanForSecrets(root);
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings.every((item) => item.file === 'probe-settings.json')).toBe(true);
+    expect(findings.map((item) => item.pattern)).toContain('sk-prefixed-key');
+    // Рядок названо точно: ключ лежить на третьому рядку файлу.
+    expect(findings[0].line).toBe(3);
+    expect(JSON.stringify(findings)).not.toContain(SYNTHETIC_SK);
+  } finally {
     removeFixture(root);
   }
 });

@@ -53,6 +53,10 @@ function makeProbeRepo(): string {
 function makeWorkingRepo(source: string): string {
   const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-editcheck-live-'));
   symlinkSync(path.join(ROOT, 'node_modules'), path.join(root, 'node_modules'));
+  // Як у справжньому репозиторії: залежності не передаються. Без цього рядка
+  // фікстура відрізняється від дерева, яке вона зображає, — а периметр
+  // свіжості з раунду 2 охоплює всю передачу, тож різниця стала б видимою.
+  writeFileSync(path.join(root, '.gitignore'), 'node_modules\n');
   writeFileSync(
     path.join(root, 'tsconfig.json'),
     '{"compilerOptions":{"strict":true,"noEmit":true,"module":"esnext",'
