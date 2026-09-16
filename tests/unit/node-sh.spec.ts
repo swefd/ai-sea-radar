@@ -133,12 +133,18 @@ test('node.sh: у скрипті немає зовнішніх утиліт — 
   // тобто варта стерегла одну форму з трьох (R-150). Тепер від слова його
   // відділяє будь-що, крім символу слова, крапки й дефіса, а завершує — пробіл,
   // кінець рядка або роздільник команди.
+  //
+  // Закривна зворотна лапка — теж термінатор: без неї форма без аргументу
+  // (BACKTICK + ls + BACKTICK) прослизала, бо після слова не було ні пробілу,
+  // ні кінця рядка (R-154). Сам символ підставляється змінною: у `String.raw`
+  // його довелося б екранувати, і в рядок потрапив би ще й зворотний слеш.
+  const BACKTICK = '`';
   for (const forbidden of [
     'dirname', 'basename', 'sed', 'ls', 'cat', 'grep', 'awk',
     'readlink', 'expr', 'tr', 'head', 'tail', 'which', 'find', 'xargs', 'env',
   ]) {
     expect(body, `зовнішня утиліта ${forbidden}`)
-      .not.toMatch(new RegExp(String.raw`(^|[^\w.-])${forbidden}(\s|$|[;|&)<>])`, 'm'));
+      .not.toMatch(new RegExp(String.raw`(^|[^\w.-])${forbidden}(\s|$|[;|&)<>${BACKTICK}])`, 'm'));
   }
 });
 
@@ -339,6 +345,63 @@ test('.nvmrc немає зовсім — теж голосна відмова, �
     expect(result.stderr).toContain(probeRoot);
   } finally {
     rmSync(probeRoot, { recursive: true, force: true });
+  }
+});
+
+test('кінцевий пробіловий символ у .nvmrc — форматування, а не значення', () => {
+  // До зняття запасного `want=24` CRLF мовчки провалювався у 24 й був правильним
+  // ВИПАДКОВО. Прибраний фолбек оголив розбір, який ніколи не був повним: чекаут
+  // на Windows із autocrlf інакше не запустив би хук узагалі, на цілком легальному
+  // для nvm файлі. Мажор 97 навмисно неіснуючий: доказом служить САМЕ ЧИСЛО у
+  // відмові, тобто те, що файл розібрано, а не те, що щось якось побігло.
+  for (const [label, content] of [
+    ['CRLF', '97\r\n'],
+    ['кінцевий пробіл', '97 \n'],
+    ['кінцева табуляція', '97\t\n'],
+    ['CR без переводу рядка', '97\r'],
+    ['пробіл і CR разом', '97 \r\n'],
+  ] as const) {
+    const { probeRoot, probeSh } = makeProbeTree(content);
+    try {
+      const result = spawnSync(probeSh, ['-e', 'process.stdout.write("ok")'], {
+        encoding: 'utf8',
+        input: '{}',
+      });
+      expect(result.status, label).toBe(0);
+      expect(result.stdout, label).toContain('major 97');
+    } finally {
+      rmSync(probeRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test('не-мажори в .nvmrc і далі відмовляють гучно: banana, порожній файл, самі пробіли', () => {
+  // Друга половина R-153: зрізання кінцевих пробілів не сміє перетворитися на
+  // «витягнути з файлу бодай щось». Це не «24 зі сміттям на хвості» — це не-мажори.
+  // (`lts/hydrogen` стереже окремий тест вище: у нього своя причина — він
+  // легальний для nvm, і саме тому спокусливо було б його якось прийняти.)
+  // Провідний пробіл тут — МЕЖА сьогоднішнього розбору, закріплена навмисно:
+  // зрізається лише хвіст, бо саме там autocrlf лишає \r. Якщо межу колись
+  // посунуть, цей рядок почервоніє й скаже про це, замість тихо змінити поведінку.
+  for (const [label, content] of [
+    ['banana', 'banana\n'],
+    ['порожній файл', ''],
+    ['самі пробіли', '   \n'],
+    ['сам лише CRLF', '\r\n'],
+    ['провідна табуляція', '\t24\n'],
+  ] as const) {
+    const { probeRoot, probeSh } = makeProbeTree(content);
+    try {
+      const result = spawnSync(probeSh, ['-e', 'process.stdout.write("ok")'], {
+        encoding: 'utf8',
+        input: '{}',
+      });
+      expect(result.status, label).toBe(0);
+      expect(result.stdout, label).not.toContain('ok');
+      expect(result.stdout, label).toContain('не розібрано');
+    } finally {
+      rmSync(probeRoot, { recursive: true, force: true });
+    }
   }
 });
 
