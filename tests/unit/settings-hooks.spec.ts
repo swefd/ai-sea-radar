@@ -68,8 +68,11 @@ const PLUGINS_BEFORE_WIRING = [
 
 test('вмикання не загубило наявний enabledPlugins', () => {
   expect(settings()).toHaveProperty('enabledPlugins');
-  expect(Object.keys(settings().enabledPlugins ?? {}))
-    .toEqual(expect.arrayContaining(PLUGINS_BEFORE_WIRING));
+  const plugins = settings().enabledPlugins ?? {};
+  // Перевіряється ЗНАЧЕННЯ, не наявність ключа: `"…": false` лишає ключ на місці,
+  // а плагін вимкненим — втрата рівно того ж ґатунку, що й видалений рядок, і
+  // `Object.keys` її не бачить.
+  for (const id of PLUGINS_BEFORE_WIRING) expect(plugins[id], id).toBe(true);
 });
 
 test('PostToolUse увімкнено на Edit|Write із явним таймаутом 120', () => {
@@ -111,11 +114,19 @@ for (const event of ['PostToolUse', 'Stop'] as const) {
    * на цій машині. Ціна конкретна — машинозалежний домашній шлях у файлі, який
    * клієнт відкриває на прийманні, і хук, що не запуститься в жодного іншого.
    * Тому адреса скрипта перевіряється в НЕРОЗКРИТОМУ рядку.
+   *
+   * Перевіряється рівно ця властивість — «шлях адресований змінною» — і жодна
+   * деталь запису понад неї. Рівносильні для `sh` форми мусять лишатися зеленими:
+   * подвійний пробіл, `"${CLAUDE_PROJECT_DIR}"` і канонічна форма З ДОВІДНИКА
+   * `"$CLAUDE_PROJECT_DIR/…"` з лапками навколо всього шляху. Інакше наступний,
+   * хто напише форму, надруковану в документації, отримає червоний тест і
+   * вирішить, що помилився ВІН, — а це пастка в коді, який ми віддаємо.
    */
   test(`команда ${event} адресує скрипт через $CLAUDE_PROJECT_DIR, а не машинним шляхом`, () => {
-    const words = commandOf(event).split(' ');
-    expect(words).toHaveLength(2);
-    for (const word of words) expect(word).toMatch(/^"\$CLAUDE_PROJECT_DIR"\//);
+    // Слово зі скісною рискою — це шлях; решта (майбутні прапорці) не обходить.
+    const paths = commandOf(event).split(/\s+/).filter((word) => word.includes('/'));
+    expect(paths.length).toBeGreaterThanOrEqual(2); // резолвер і скрипт
+    for (const p of paths) expect(p).toMatch(/^"?\$\{?CLAUDE_PROJECT_DIR\}?/);
   });
 
   test(`команда ${event} розкривається в абсолютні шляхи до наявних файлів`, () => {
