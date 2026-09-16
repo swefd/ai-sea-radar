@@ -83,12 +83,17 @@ export function toReport({ root, tier, noSkip, only, hash, fileCount, reused, bl
 }
 
 /**
- * Конверт для stdout — рівно п'ять ключів R-16 і рівно в тому порядку (R-64).
+ * Конверт для stdout — рівно шість ключів R-16 + R-73 і рівно в тому порядку.
  * Окрема експортована функція, а не літерал усередині main(): CLI не запускає
  * жоден тест набору, тож зібраний у main() конверт міг би втратити поле, лишивши
  * всі тести зеленими, а колонку в таблиці — порожньою.
  * Звіт усередині багатший (`schema`, `key`, `blocking`, обрізані потоки) — це
  * не змінює форми stdout: багатший об'єкт іде у .verify/last-run.json.
+ *
+ * Шостий ключ `reused` (R-73) — тому, що Stop-гейт задачі 10 читає саме цей
+ * stdout, а не файл (спека §6.3 крок 3). «Зелено, бо відтворено з кешу» — інше
+ * твердження, ніж «зелено», так само як «зелено, але X пропущено» (крок 5).
+ * Людина бачить різницю в таблиці; машина без цього ключа — ні.
  */
 export function toStdoutJson(report) {
   return {
@@ -99,6 +104,10 @@ export function toStdoutJson(report) {
     results: report.results.map((r) => ({
       id: r.id, status: r.status, reason: r.reason, durationMs: r.durationMs,
     })),
+    // `=== true`, а не `report.reused`: JSON.stringify МОВЧКИ викидає ключ зі
+    // значенням undefined, тож звіт, зібраний не через toReport, втратив би поле
+    // цілком — і споживач прочитав би відсутність як «свіжий».
+    reused: report.reused === true,
   };
 }
 

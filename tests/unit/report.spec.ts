@@ -1,9 +1,11 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { test, expect } from '@playwright/test';
 
+import { sourceHash } from '../../scripts/verify/hash.mjs';
 import type { CheckResult } from '../../scripts/verify/run.mjs';
 import {
   cacheKey,
@@ -136,7 +138,7 @@ test('readFreshPass ніколи не відтворює НЕзелений пр
 
 // 7. Конверт stdout (R-64). До цієї задачі форму `--json` не перевіряв жоден тест:
 // CLI не запускає ніщо в наборі, тож поле можна було прибрати, лишивши все зелене.
-test('toStdoutJson віддає рівно пʼять ключів R-16 і повні рядки результатів', () => {
+test('toStdoutJson віддає рівно шість ключів R-16+R-73 і повні рядки результатів', () => {
   const report = toReport({
     root: '/tmp/x', tier: 'full', noSkip: true, only: ['lint'],
     hash: 'abc123', fileCount: 11, reused: false, blocking: false,
@@ -144,7 +146,8 @@ test('toStdoutJson віддає рівно пʼять ключів R-16 і по�
   });
   const json = toStdoutJson(report);
   // Порядок ключів теж фіксований R-16, тож toEqual по масиву, а не toContain.
-  expect(Object.keys(json)).toEqual(['tier', 'root', 'noSkip', 'sourceHash', 'results']);
+  // `reused` — шостий і останній (R-73); сьомого ключа немає за жодних обставин.
+  expect(Object.keys(json)).toEqual(['tier', 'root', 'noSkip', 'sourceHash', 'results', 'reused']);
   expect(json.tier).toBe('full');
   expect(json.root).toBe('/tmp/x');
   expect(json.noSkip).toBe(true);
@@ -158,4 +161,75 @@ test('toStdoutJson віддає рівно пʼять ключів R-16 і по�
     expect(Number.isFinite(row.durationMs)).toBe(true);
     expect(row.durationMs).toBeGreaterThanOrEqual(0);
   }
+  // Відсутнє поле — не «свіжий». JSON.stringify викинув би ключ `undefined`
+  // мовчки, і споживач прочитав би відсутність як «нічого не відтворювали».
+  // Каст — саме про це: декларація обіцяє boolean, а боронимося від звіту,
+  // зібраного НЕ через toReport, де цієї обіцянки ніхто не давав.
+  expect(toStdoutJson({ ...report, reused: undefined } as unknown as typeof report).reused).toBe(false);
+  expect(toStdoutJson({ ...report, reused: true }).reused).toBe(true);
+});
+
+// 8. Проводка кеша в CLI. Доти реверт ОДНОГО рядка main() — того, що читає кеш —
+// лишав увесь набір зеленим: main() не запускає жоден тест, тож усе в ньому
+// трималося на ручному кроці приймання, який завтра ніхто не повторить.
+// Єдиний чесний спосіб це закрити — запустити CLI дочірнім процесом.
+
+/**
+ * Тимчасовий корінь із готовим кешем, у якому лежить рядок-сентинел: id, якого
+ * в справжньому реєстрі немає. Якщо CLI віддасть саме його — кеш справді
+ * відтворено, і жодна справжня перевірка не бігла.
+ */
+function seedCachedRoot(): { root: string; sentinel: string } {
+  const sentinel = 'сентинел-кеш';
+  // realpathSync: на macOS tmpdir лежить за симлінком (/var → /private/var),
+  // а CLI кличе path.resolve, який симлінка не розкриває. Без цього корінь
+  // фікстури і корінь CLI були б різними рядками.
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'verify-cli-')));
+  // sourceHash ходить у git через execFileSync і в не-репозиторії просто кине.
+  execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q'], { cwd: root });
+  // Не декорація: `git ls-files -c -o --exclude-standard` перелічує й
+  // НЕвідстежуване, тож без цього рядка сам файл кеша ввійшов би в хеш, і ключ,
+  // порахований до запису, розійшовся б із ключем, який CLI рахує після.
+  writeFileSync(path.join(root, '.gitignore'), '/.verify/\n');
+
+  const { hash } = sourceHash(root);
+  const opts = { hash, tier: 'fast' as const, noSkip: false, only: [] as string[] };
+  writeReport(root, toReport({
+    root, ...opts, fileCount: 1, reused: false, blocking: false,
+    results: [result({ id: sentinel })],
+  }));
+  // Звірка самої фікстури тими самими функціями, що й CLI: якщо тут null —
+  // зламана підготовка, а не проводка, і червоне нижче означало б інше.
+  expect(readFreshPass(root, cacheKey(opts))?.results[0].id).toBe(sentinel);
+  return { root, sentinel };
+}
+
+function runCli(root: string, extra: string[]): string {
+  return execFileSync(
+    process.execPath,
+    [
+      path.join(process.cwd(), 'scripts/verify/run.mjs'),
+      '--root', root, '--tier', 'fast', '--reuse-if-fresh', ...extra,
+    ],
+    { encoding: 'utf8' },
+  );
+}
+
+test('CLI із --reuse-if-fresh справді читає кеш: у --json лише сентинел і reused true', () => {
+  const { root, sentinel } = seedCachedRoot();
+  const json = JSON.parse(runCli(root, ['--json'])) as { results: { id: string }[]; reused: boolean };
+  // Рівно сентинел і нічого більше: побігли б справжні перевірки — тут були б
+  // typecheck/lint/unit, а сентинел зник би разом із кешем.
+  expect(json.results.map((r) => r.id)).toEqual([sentinel]);
+  // R-73: машина мусить бачити те саме, що людина бачить у таблиці.
+  expect(json.reused).toBe(true);
+});
+
+test('CLI у текстовому режимі каже, що відтворив, і називає межі свіжості', () => {
+  const { root, sentinel } = seedCachedRoot();
+  const out = runCli(root, []);
+  expect(out).toContain(sentinel);
+  // Підрядок, а не цілий рядок: текст меж іще уточнюватиме задача 12.
+  expect(out).toContain('межі свіжості');
+  expect(out).toContain('відтворено');
 });

@@ -23,13 +23,15 @@ export interface Report {
   results: CheckResult[];
 }
 
-/** Конверт stdout: рівно п'ять ключів R-16, у зафіксованому порядку. */
+/** Конверт stdout: рівно шість ключів (R-16 + R-73), у зафіксованому порядку. */
 export interface StdoutReport {
   tier: Options['tier'];
   root: string;
   noSkip: boolean;
   sourceHash: string;
   results: Pick<CheckResult, 'id' | 'status' | 'reason' | 'durationMs'>[];
+  /** R-73: відтворене зелене — інше твердження, ніж свіже. Останній ключ. */
+  reused: boolean;
 }
 
 export declare function truncateBytes(text: string, maxBytes?: number): string;
