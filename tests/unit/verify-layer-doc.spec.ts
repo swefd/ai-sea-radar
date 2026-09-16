@@ -66,6 +66,21 @@ function blockOf(section: string, id: string): string[] {
   return to === -1 ? lines.slice(from) : lines.slice(from, from + 1 + to);
 }
 
+/**
+ * Рядок підрозділу, що починається заданим префіксом, — або `null`, якщо його немає.
+ *
+ * Вимога «не більше одного» несуча, а не гігієнічна: без неї вигадана команда, дописана
+ * ПОРЯД зі справжньою, лишала б сюїту зеленою (виміряно: `2 passed`). Далі кожне поле
+ * звіряється на РІВНІСТЬ, а не на входження, з тієї ж причини — `toContain` правдивий і
+ * тоді, коли поряд із правдою в тому самому рядку стоїть вигадка.
+ */
+function soleLine(block: string[], prefix: string, id: string): string | null {
+  const hits = block.filter((line) => line.startsWith(prefix));
+  expect(hits.length, `«${id}»: рядків «${prefix}» очікується не більше одного`)
+    .toBeLessThanOrEqual(1);
+  return hits.length === 1 ? hits[0] : null;
+}
+
 test('кожен рядок реєстру присутній у verify-layer.md дослівно', () => {
   const section = checksSection(readDoc());
 
@@ -74,17 +89,27 @@ test('кожен рядок реєстру присутній у verify-layer.md
   expect(CHECKS.length, 'реєстр порожній — перевіряти нічого').toBeGreaterThan(0);
 
   for (const check of CHECKS) {
-    const block = blockOf(section, check.id).join('\n');
+    const block = blockOf(section, check.id);
 
-    expect(block, `рівень для «${check.id}» розійшовся з реєстром`)
-      .toContain(`\x60${check.tier}\x60`);
-    expect(block, `cmd для «${check.id}» розійшовся з реєстром`)
-      .toContain(`\x60${check.cmd}\x60`);
-    expect(block, `proves для «${check.id}» розійшовся з реєстром`).toContain(check.proves);
-    expect(block, `blindSpot для «${check.id}» розійшовся з реєстром`).toContain(check.blindSpot);
-    for (const after of check.after) {
-      expect(block, `after для «${check.id}» розійшовся з реєстром`).toContain(`\x60${after}\x60`);
-    }
+    expect(block[0], `заголовок «${check.id}» розійшовся з реєстром`)
+      .toBe(`### \x60${check.id}\x60 — рівень \x60${check.tier}\x60`);
+
+    expect(soleLine(block, '**Команда:**', check.id), `cmd для «${check.id}»`)
+      .toBe(`**Команда:** \x60${check.cmd}\x60`);
+
+    // ДВОБІЧНО: порожній `after` означає, що рядка бути НЕ МУСИТЬ. Однобічна звірка
+    // («кожен елемент after згаданий») пропускала дописане `після: build` рядкові,
+    // чий after порожній, — виміряно: `2 passed`.
+    const expectedAfter = check.after.length === 0
+      ? null
+      : `**Запускається після:** ${check.after.map((a) => `\x60${a}\x60`).join(', ')}`;
+    expect(soleLine(block, '**Запускається після:**', check.id), `after для «${check.id}»`)
+      .toBe(expectedAfter);
+
+    expect(soleLine(block, '**Доводить.**', check.id), `proves для «${check.id}»`)
+      .toBe(`**Доводить.** ${check.proves}`);
+    expect(soleLine(block, '**Не доводить.**', check.id), `blindSpot для «${check.id}»`)
+      .toBe(`**Не доводить.** ${check.blindSpot}`);
   }
 });
 
