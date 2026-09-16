@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
-import { scanForRefImports } from '../../scripts/verify/checks/no-ref-imports.mjs';
+import { scanForRefImports, scanText } from '../../scripts/verify/checks/no-ref-imports.mjs';
 import {
   makeFixtureRepo,
   removeFixture,
@@ -97,6 +97,75 @@ test('CSS у периметрі: обгортку url(...) ловить лише
     // Саме `url(...)`, а не голий `@import '…'`: голий спіймався б і як
     // import-bare, тож окрема форма css-import доводиться лише обгорткою.
     expect(violations.map((v) => v.form)).toEqual(['css-import']);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+/**
+ * Годує `scanText` текстом напряму — і тим самим робить дві речі одним тестом.
+ *
+ * Перше: закриває дірку, через яку перевірка мовчки зеленіла на панівному
+ * форматуванні цього репозиторію. Порядкове зіставлення не бачило інструкції, у
+ * якій ключове слово й `from` стоять на різних рядках; так написані п'ять імпортів
+ * у чотирьох файлах дерева, включно з цим файлом.
+ *
+ * Друге: це єдине місце, де декларація `scanText` у `.d.mts` узагалі навантажена.
+ * Без виклику звідси рядок декларації можна було замінити на
+ * `scanTextTYPO(relPath: number): number` — і `check-types`, і весь набір лишалися
+ * зеленими (виміряно, R-48).
+ */
+test('scanText: багаторядкову форму видно так само, як однорядкову', () => {
+  const found = (text: string): string[] =>
+    scanText('probe.ts', text).map((v) => `${v.form}@${v.line}`);
+
+  // Контрольна група: на однорядкових випадках номери рядків не зсунулися.
+  expect(found(`import { bearing } from '${REF}/latlon-spherical.js';\n`))
+    .toEqual(['import-from@1']);
+  // Три форми, невидимі до цього.
+  expect(found(`import {\n  bearing,\n} from '${REF}/latlon-spherical.js';\n`))
+    .toEqual(['import-from@1']);
+  expect(found(`import type {\n  LatLon,\n} from '${REF}/latlon-spherical.js';\n`))
+    .toEqual(['import-from@1']);
+  expect(found(`export {\n  Dms,\n} from '${REF}/dms.js';\n`))
+    .toEqual(['export-from@1']);
+  expect(found(`import { bearing }\n  from '${REF}/latlon-spherical.js';\n`))
+    .toEqual(['import-from@1']);
+  // Крапка з комою лишилася бар'єром: чистий сусід не заражається від переносу.
+  expect(found("import { useState } from 'react';\nimport { z } from './local';\n"))
+    .toEqual([]);
+  // Номер — це рядок КЛЮЧОВОГО СЛОВА, а не рядок специфікатора.
+  expect(found(`const a = 1;\nconst b = 2;\nimport {\n  bearing,\n} from '${REF}/dms.js';\n`))
+    .toEqual(['import-from@3']);
+});
+
+/**
+ * Периметр цілком, а не один його шматок. До цього тесту чотири з п'яти його частин
+ * не доводилися нічим: звуження периметра до `['src/']` мовчки роняло його з 26
+ * файлів до 9, лишало EXIT=0 і весь набір зеленим (виміряно рецензією).
+ * `src/` стереже тест вище, `.css` — тест CSS, решту — цей.
+ */
+test('периметр: порушення видно в кожній його частині, включно з кореневим конфігом', () => {
+  const bad = (name: string): string => `import x from '${REF}/${name}.js';\n`;
+  const root = makeFixtureRepo({
+    ...CLEAN_FILES,
+    'app/layout.tsx': bad('a'),
+    'tests/e2e/bad.spec.ts': bad('b'),
+    'scripts/verify/checks/bad.mjs': bad('c'),
+    '.claude/hooks/bad.mjs': bad('d'),
+    // Кореневий конфіг не має префікса взагалі — він у периметр потрапляє лише
+    // через SOURCE_FILES, тобто лише тому, що периметр спільний із хешем.
+    'next.config.ts': bad('e'),
+  });
+  try {
+    const { violations } = scanForRefImports(root);
+    expect(at(violations).sort()).toEqual([
+      '.claude/hooks/bad.mjs:1',
+      'app/layout.tsx:1',
+      'next.config.ts:1',
+      'scripts/verify/checks/bad.mjs:1',
+      'tests/e2e/bad.spec.ts:1',
+    ]);
   } finally {
     removeFixture(root);
   }
