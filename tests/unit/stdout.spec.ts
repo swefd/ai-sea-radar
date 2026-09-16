@@ -15,20 +15,20 @@ const SENT_BYTES = 400_000;
  * способом і НЕГАЙНО виходить. Негайний вихід тут не штучність, а суть: рівно
  * так закінчується хук, і рівно тому асинхронний буфер Node не встигає злитись.
  */
-function writeAndExit(body: string): number {
+function writeAndExit(body: string): Buffer {
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', body], {
     encoding: 'buffer',
     maxBuffer: 8 * 1024 * 1024,
   });
   if (result.error) throw result.error;
-  return result.stdout.length;
+  return result.stdout;
 }
 
 test('writeAllSync доставляє весь текст там, де process.stdout.write губить хвіст', () => {
   const delivered = writeAndExit(
     `import { writeAllSync } from ${JSON.stringify(MODULE_URL)};`
     + `writeAllSync(1, 'x'.repeat(${SENT_BYTES})); process.exit(0);`,
-  );
+  ).length;
   expect(delivered).toBe(SENT_BYTES);
 
   // Контроль. Він не «для повноти»: без нього тест був би зеленим і на
@@ -37,7 +37,7 @@ test('writeAllSync доставляє весь текст там, де process.s
   // і тоді переміряти треба ПОТРЕБУ в модулі, а не послабити асерцію.
   const truncated = writeAndExit(
     `process.stdout.write('x'.repeat(${SENT_BYTES})); process.exit(0);`,
-  );
+  ).length;
   expect(truncated).toBeLessThan(SENT_BYTES);
 });
 
@@ -45,12 +45,18 @@ test('writeAllSync рахує БАЙТИ, а не символи', () => {
   // Кирилиця — два байти на символ. Функція, що повернула б довжину рядка,
   // звітувала б про вдвічі меншу доставку, ніж сталася, і цикл зупинявся б
   // не там, де треба.
+  //
+  // Твердження — про ВМІСТ, а не про довжину виводу, і це не педантизм:
+  // перша редакція цього тесту звіряла тільки сумарну довжину й лишалася
+  // зеленою під `Math.floor(written / 2)`, бо «10» і «20» однаково по два
+  // байти. Тест, що проходить і з правильною реалізацією, і з правдоподібною
+  // неправильною, не стереже нічого (R-123).
   const delivered = writeAndExit(
     `import { writeAllSync } from ${JSON.stringify(MODULE_URL)};`
-    + "const n = writeAllSync(1, 'я'.repeat(10)); process.stdout.write(String(n)); process.exit(0);",
-  );
-  // 20 байтів кирилиці + два байти числа «20».
-  expect(delivered).toBe(22);
+    + "const n = writeAllSync(1, 'я'.repeat(10)); process.stdout.write('|' + n); process.exit(0);",
+  ).toString('utf8');
+
+  expect(delivered).toBe(`${'я'.repeat(10)}|20`);
 });
 
 /** Запис, що приймає не більше `chunk` байтів за раз і збирає віддане. */

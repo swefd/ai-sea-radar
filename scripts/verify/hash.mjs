@@ -38,6 +38,40 @@ export const SOURCE_FILES = [
   '.claude/settings.json',
 ];
 
+/**
+ * Третій вимір периметра: розширення, які перевірки читають ЗВІДУСІЛЬ, а не
+ * лише з перелічених вище тек.
+ *
+ * Префіксного списку було не досить, і це виміряно двічі, а не передбачено:
+ *
+ *   кореневий `probe-gate-hole.ts` зі справжньою TS2322 →
+ *     `tsc -p tsconfig.json --noEmit` EXIT=2, а
+ *     `run.mjs --tier fast --reuse-if-fresh` → `reused: true`, EXIT=0;
+ *   кореневий `probe-lint-hole.mjs` із синтаксичною помилкою →
+ *     `eslint .` EXIT=1, а той самий гейт → `reused: true`, EXIT=0.
+ *
+ * Обидва рази гейт відтворював протухле зелене поверх дерева, яке перевірку не
+ * проходить: рівно той провал, заради запобігання якому існує весь шар.
+ * Кореневі `middleware.ts`, `instrumentation.ts`, `postcss.config.mjs` — не
+ * гіпотеза, а звичайні файли Next.
+ *
+ * Периметр свіжості не має права бути вужчим за те, що насправді читають рядки
+ * реєстру (R-158). Тут — об'єднання двох таких периметрів: `include` у
+ * tsconfig бере кожен `.ts`/`.tsx` у дереві, а `eslint .` — кожен файл із
+ * цього переліку поза своїми ігнорами. Самі глоби сюди не виписані навмисно:
+ * їхня закривна послідовність обірвала б цей коментар посеред речення.
+ *
+ * Ширше за строго необхідне — свідомо: зайве протухання коштує одного зайвого
+ * прогону, а вузьке — зеленого вердикту про неперевірений код.
+ */
+export const SOURCE_EXTENSIONS = [
+  '.ts', '.tsx', '.mts', '.cts',
+  '.js', '.jsx', '.mjs', '.cjs',
+];
+
+/** Дзеркало `exclude` у tsconfig.json — і рівно воно, без додатків. */
+export const NON_SOURCE_PREFIXES = ['node_modules/', 'reference/'];
+
 // U+FFFD REPLACEMENT CHARACTER — зібраний із коду, а не вписаний літерою:
 // сам символ у джерелі виглядає як збите кодування, тобто як рівно та
 // поломка, яку він і ловить, і будь-яке перезбереження файлу зіпсувало б його
@@ -45,8 +79,11 @@ export const SOURCE_FILES = [
 const REPLACEMENT_CHARACTER = String.fromCharCode(0xfffd);
 
 export function isSourcePath(relPath) {
+  // Виключення — перші: те, чого tsc не читає, не змінює його вердикту.
+  if (NON_SOURCE_PREFIXES.some((prefix) => relPath.startsWith(prefix))) return false;
   return SOURCE_PREFIXES.some((prefix) => relPath.startsWith(prefix))
-    || SOURCE_FILES.includes(relPath);
+    || SOURCE_FILES.includes(relPath)
+    || SOURCE_EXTENSIONS.includes(path.extname(relPath));
 }
 
 /**

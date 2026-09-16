@@ -8,13 +8,14 @@
 // Корінь дерева — з поля cwd вхідного JSON, НЕ з $CLAUDE_PROJECT_DIR:
 // у worktree змінна лишається на головному checkout.
 //
-// МОВЧАННЯ ЦЬОГО ХУКА ОЗНАЧАЄ РІВНО ОДНЕ: кожен інструмент відпрацював і
-// нічого не знайшов. Кожен шлях, на якому інструмент не дав вердикту —
-// відсутній tsc, фатальна помилка конфігу ESLint, нерозбірний вхід, чуже
-// дерево, — друкує про це вголос. Порожній вивід «бо перевірка не запустилась»
-// невідрізненний від чистого дерева, а це рівно той клас брехні, проти якого
-// написано весь шар. Блокувати ми не можемо (і не хочемо), тож єдиний
-// доступний інструмент — сказати голосно в additionalContext.
+// МОВЧИТЬ ЦЕЙ ХУК РІВНО У ДВОХ ВИПАДКАХ: подія не про код (тоді про код і не
+// сказано нічого) або перевірки відпрацювали й нічого не знайшли. Кожен шлях,
+// на якому інструмент не дав вердикту — відсутній tsc, фатальна помилка
+// конфігу ESLint, нерозбірний вхід, файл поза деревом події, — друкує про це
+// вголос. Порожній вивід «бо перевірка не запустилась» невідрізненний від
+// чистого дерева, а це рівно той клас брехні, проти якого написано весь шар.
+// Блокувати ми не можемо (і не хочемо), тож єдиний доступний інструмент —
+// сказати голосно в additionalContext.
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
@@ -27,14 +28,26 @@ import { truncateBytes } from '../../scripts/verify/report.mjs';
 import { writeAllSync } from '../../scripts/verify/stdout.mjs';
 
 export const CODE_EXTENSIONS = ['.ts', '.tsx', '.mjs', '.js'];
+
+/**
+ * Те, чого ESLint не лінтить. Це НЕ економія роботи — це чесність вердикту:
+ * виміряно, що `eslint out/probe9.ts` виходить із кодом **0** і рядком
+ * «File ignored because of a matching ignore pattern», а нуль — це «чисто».
+ * Тобто для файлу зі справжньою TS2322 хук друкував 0 байтів: хибне чисте, а
+ * не марна робота.
+ *
+ * Перелік дзеркалить `globalIgnores` у `eslint.config.mjs` і тримається
+ * синхронно ВРУЧНУ — саме ця ручна синхронність один раз і відстала, тож її
+ * стереже тест, який читає `eslint.config.mjs` і звіряє кожен запис поіменно.
+ * `node_modules/` до `globalIgnores` не входить: його ESLint ігнорує сам.
+ */
 export const IGNORED_PREFIXES = [
-  'reference/', '.next/', 'node_modules/', '.verify/',
-  // Дзеркалить globalIgnores у eslint.config.mjs: у цих теках ESLint не дає
-  // вердикту взагалі, тож правка тут не може нічого довести — зате тягне
-  // повний check-types усього проєкту. Периметр хука не має бути ширшим за
-  // периметр лінту.
-  '.superpowers/', '.claude/worktrees/',
+  'reference/', '.next/', 'out/', 'build/', 'node_modules/',
+  '.verify/', '.superpowers/', '.claude/worktrees/',
 ];
+
+/** Те саме, але записи `globalIgnores`, які є іменами файлів, а не теками. */
+export const IGNORED_FILES = ['next-env.d.ts'];
 export const TYPECHECK_CACHE_DIR = '.verify/typecheck';
 
 // Рядок, за яким гучне «не виконалось» упізнається і оком, і тестом. Він же
@@ -60,10 +73,21 @@ const MAX_DETAIL_BYTES = 2 * 1024;
 const TSC_ENTRY = 'node_modules/typescript/bin/tsc';
 const ESLINT_ENTRY = 'node_modules/eslint/bin/eslint.js';
 
+/** Чи схоже це взагалі на код — питання про ім'я, не про розташування. */
+function hasCodeExtension(somePath) {
+  return CODE_EXTENSIONS.includes(path.extname(somePath));
+}
+
+/** Чи вийшов шлях за межі дерева, яке назвала подія. */
+export function isOutsideRoot(relPath) {
+  return relPath === '..' || relPath.startsWith('../') || path.isAbsolute(relPath);
+}
+
 export function isCheckablePath(relPath) {
-  if (relPath.startsWith('../') || path.isAbsolute(relPath)) return false;
+  if (isOutsideRoot(relPath)) return false;
   if (IGNORED_PREFIXES.some((prefix) => relPath.startsWith(prefix))) return false;
-  return CODE_EXTENSIONS.includes(path.extname(relPath));
+  if (IGNORED_FILES.includes(relPath)) return false;
+  return hasCodeExtension(relPath);
 }
 
 const TSC_LINE = /^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/;
@@ -84,14 +108,17 @@ export function parseTscErrors(stdout) {
   return errors;
 }
 
-/** Текст «не виконалось» із причиною та подробицею від самого інструмента. */
-function notRunNotice(tool, reason, { stdout = '', stderr = '' } = {}) {
-  const said = truncateBytes(`${stdout}\n${stderr}`.trim(), MAX_DETAIL_BYTES);
+/** Текст «не виконалось» із причиною та подробицею. */
+function notRunNotice(tool, reason, detail = '') {
+  const said = truncateBytes(detail.trim(), MAX_DETAIL_BYTES);
   return `${NOT_RUN_PREFIX} — ${tool}: ${reason}.\n`
     + `Це НЕ означає, що код чистий: вердикту від ${tool} немає, і цю частину `
     + 'перевірки ніхто не зробив.\n'
-    + (said === '' ? '(інструмент не сказав нічого)' : said);
+    + (said === '' ? '(подробиць немає)' : said);
 }
+
+/** Подробиця запуску інструмента: обидва потоки разом, у порядку читання. */
+const toolSaid = (run) => `${run.stdout}\n${run.stderr}`;
 
 /** Код виходу в тексті причини — або чесне «його немає». */
 const exitLabel = (status) => (
@@ -107,11 +134,19 @@ const exitLabel = (status) => (
  */
 export function tscNotRun(run, errorCount) {
   if (run.status === 0) return '';
+  // Немає коду виходу — немає вердикту, скільки б рядків не встигло
+  // надрукуватись. Так виглядає переповнення maxBuffer: процес обривають,
+  // частковий stdout може містити десяток розібраних діагностик, і без цього
+  // рядка обрізаний результат осів би в кеші ЯК ВЕРДИКТ — на добу вперед.
+  // Так само виглядає процес, убитий сигналом.
+  if (run.status === null) {
+    return notRunNotice('tsc', 'процес обірвано без коду виходу', toolSaid(run));
+  }
   if (errorCount > 0) return '';
   return notRunNotice(
     'tsc',
     `${exitLabel(run.status)}, жодного рядка діагностики не розібрано`,
-    run,
+    toolSaid(run),
   );
 }
 
@@ -126,7 +161,7 @@ export function tscNotRun(run, errorCount) {
 export function eslintNotRun(run) {
   if (run.status === 0) return '';
   if (run.status === 1 && run.stdout.trim() !== '') return '';
-  return notRunNotice('ESLint', exitLabel(run.status), run);
+  return notRunNotice('ESLint', exitLabel(run.status), toolSaid(run));
 }
 
 const MAX_LISTED = 10;
@@ -204,9 +239,9 @@ function typecheck(root) {
     // прогін «якось» був би відповіддю про невідомо що.
     return {
       errors: [],
-      notice: notRunNotice('tsc', 'не вдалося порахувати хеш дерева', {
-        stderr: String(error?.message ?? error),
-      }),
+      notice: notRunNotice(
+        'tsc', 'не вдалося порахувати хеш дерева', String(error?.message ?? error),
+      ),
     };
   }
 
@@ -299,9 +334,9 @@ async function main() {
   } catch (error) {
     // Тихий вихід тут був би тим самим мовчазним зеленим: подію отримано,
     // перевірку не зроблено, і ніхто про це не дізнався.
-    emit(notRunNotice('edit-check', 'вхідний JSON події не розібрано', {
-      stderr: String(error?.message ?? error),
-    }));
+    emit(notRunNotice(
+      'edit-check', 'вхідний JSON події не розібрано', String(error?.message ?? error),
+    ));
     process.exit(0);
   }
 
@@ -324,6 +359,24 @@ async function main() {
   if (typeof filePath !== 'string' || filePath === '') process.exit(0);
 
   const relPath = path.relative(root, path.resolve(root, filePath)).split(path.sep).join('/');
+
+  // Файл КОДУ поза деревом, яке назвала подія. Виміряно, що мовчання тут
+  // плутає дві різні речі: «це не код» і «це код, але не під тим коренем» —
+  // а друге і є та небезпека, заради якої R-20 обрав `cwd` замість
+  // $CLAUDE_PROJECT_DIR. Порожній вивід читався б як «перевірено й чисто».
+  // Не-код відсіюється раніше за цю перевірку: про нього не сказано нічого,
+  // тож і казати нема про що.
+  if (isOutsideRoot(relPath)) {
+    if (hasCodeExtension(filePath)) {
+      emit(notRunNotice(
+        'edit-check',
+        'файл коду лежить ПОЗА деревом, яке назвала подія',
+        `дерево (cwd): ${root}\nфайл: ${filePath}`,
+      ));
+    }
+    process.exit(0);
+  }
+
   if (!isCheckablePath(relPath)) process.exit(0); // крок 1 спеки: тихий вихід 0
 
   const eslint = lint(root, relPath);
@@ -353,7 +406,7 @@ if (isEntryPoint(import.meta.filename)) {
     // Падіння хука — теж «перевірки не було». Стек іде в stderr для людини,
     // коротка причина — в lead для моделі, яка інакше прочитала б тишу як «чисто».
     process.stderr.write(`edit-check: ${String(error?.stack ?? error)}\n`);
-    emit(notRunNotice('edit-check', 'хук упав', { stderr: String(error?.message ?? error) }));
+    emit(notRunNotice('edit-check', 'хук упав', String(error?.message ?? error)));
     process.exit(0);
   });
 }

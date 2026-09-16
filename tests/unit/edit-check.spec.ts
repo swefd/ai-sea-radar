@@ -1,15 +1,22 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
 
 import {
   isCheckablePath,
+  isOutsideRoot,
   parseTscErrors,
   formatLead,
   tscNotRun,
   eslintNotRun,
+  CODE_EXTENSIONS,
+  IGNORED_PREFIXES,
+  IGNORED_FILES,
+  TYPECHECK_CACHE_DIR,
   NOT_RUN_PREFIX,
   MAX_LEAD_BYTES,
 } from '../../.claude/hooks/edit-check.mjs';
@@ -33,6 +40,28 @@ function makeProbeRepo(): string {
   writeFileSync(path.join(root, 'docs.md'), '# не код\n');
   // `init.defaultBranch` задано явно — інакше вивід фікстури залежав би від
   // глобального ~/.gitconfig машини, на якій її створили (так само в hash.spec.ts).
+  execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q'], { cwd: root });
+  return root;
+}
+
+/**
+ * Дерево-проба з РОБОЧИМИ інструментами: `node_modules` — симлінк на справжні,
+ * тож `tsc` і `eslint` реально біжать, але по крихітному дереву. Так
+ * перевіряється те, чого дерево без інструментів показати не може: справжній
+ * вердикт і те, куди лягає кеш.
+ */
+function makeWorkingRepo(source: string): string {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-editcheck-live-'));
+  symlinkSync(path.join(ROOT, 'node_modules'), path.join(root, 'node_modules'));
+  writeFileSync(
+    path.join(root, 'tsconfig.json'),
+    '{"compilerOptions":{"strict":true,"noEmit":true,"module":"esnext",'
+    + '"moduleResolution":"bundler"},"include":["*.ts"]}\n',
+  );
+  // Порожній flat-конфіг: ESLint має відпрацювати й дати вердикт, а не впасти
+  // на відсутньому конфігу — інакше тест не відрізнив би одне від одного.
+  writeFileSync(path.join(root, 'eslint.config.mjs'), 'export default [];\n');
+  writeFileSync(path.join(root, 'probe.ts'), source);
   execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q'], { cwd: root });
   return root;
 }
@@ -89,14 +118,67 @@ test('isCheckablePath пропускає код і відкидає все ін�
 });
 
 test('isCheckablePath відкидає й те, чого не лінтить ESLint', () => {
-  // Периметр хука не має бути ШИРШИМ за периметр лінту: правка .mjs у цих
-  // теках не може дати вердикту (ESLint їх ігнорує), зате тягне повний
-  // check-types усього проєкту. Перелік дзеркалить globalIgnores у
-  // eslint.config.mjs.
+  // Периметр хука не має бути ШИРШИМ за периметр лінту — і це не про зайву
+  // роботу. Виміряно: `eslint out/probe9.ts` виходить із кодом 0 і рядком
+  // «File ignored…», що читається як ЧИСТО, тож для файлу зі справжньою
+  // TS2322 хук друкував нуль байтів. Хибне чисте, не марна робота.
   expect(isCheckablePath('.superpowers/sdd/2026-09-15-verify-layer/draft.mjs')).toBe(false);
   expect(isCheckablePath('.claude/worktrees/verify-layer/scripts/verify/run.mjs')).toBe(false);
+  expect(isCheckablePath('out/probe9.ts')).toBe(false);
+  expect(isCheckablePath('build/probe9.ts')).toBe(false);
+  expect(isCheckablePath('next-env.d.ts')).toBe(false);
   // А власні хуки — лінтяться й перевіряються, тож лишаються в периметрі.
   expect(isCheckablePath('.claude/hooks/edit-check.mjs')).toBe(true);
+});
+
+test('перелік ігнорів хука не відстає від globalIgnores у eslint.config.mjs', () => {
+  // Ручна синхронність один раз уже відстала: `out/`, `build/` і
+  // `next-env.d.ts` були в конфігу й не були в хуку. Цей тест читає конфіг і
+  // звіряє КОЖЕН його запис, тож наступне розходження буде червоним, а не
+  // мовчазним чистим.
+  const config = readFileSync(path.join(ROOT, 'eslint.config.mjs'), 'utf8');
+  const block = /globalIgnores\(\[([\s\S]*?)\n\s*\]\)/.exec(config);
+  expect(block, 'globalIgnores у eslint.config.mjs не знайдено').not.toBeNull();
+
+  const patterns = [...(block as RegExpExecArray)[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  // Порожній перелік зробив би цикл нижче безглуздим, а тест — зеленим ні від чого.
+  expect(patterns.length).toBeGreaterThanOrEqual(5);
+
+  for (const pattern of patterns) {
+    // `.next/**` → зразок файлу в тій теці; `next-env.d.ts` → він сам.
+    const sample = pattern.endsWith('/**') ? `${pattern.slice(0, -3)}/probe.ts` : pattern;
+    expect(isCheckablePath(sample), `не покрито: ${pattern}`).toBe(false);
+  }
+});
+
+test('декларації .d.mts відповідають тому, що модуль справді експортує', () => {
+  // R-48: `check-types` НЕ звіряє .d.mts із .mjs — єдине, що взагалі перевіряє
+  // декларацію, це імпорт імені в тесті. Тому кожне ім'я тут не лише
+  // імпортоване, а й ужите у твердженні, яке має значення.
+  expect(CODE_EXTENSIONS).toEqual(['.ts', '.tsx', '.mjs', '.js']);
+  for (const extension of CODE_EXTENSIONS) {
+    expect(isCheckablePath(`src/shared/probe${extension}`)).toBe(true);
+  }
+  // Розширення поза переліком — не код для цього хука.
+  expect(isCheckablePath('src/shared/probe.json')).toBe(false);
+
+  for (const prefix of IGNORED_PREFIXES) {
+    expect(isCheckablePath(`${prefix}probe.ts`), `не ігнорується: ${prefix}`).toBe(false);
+  }
+  for (const file of IGNORED_FILES) {
+    expect(isCheckablePath(file), `не ігнорується: ${file}`).toBe(false);
+  }
+
+  // Кеш — не будь-де, а саме там, куди вказує константа: перевіряється нижче
+  // на справжньому прогоні, тут — форма шляху.
+  expect(TYPECHECK_CACHE_DIR).toBe('.verify/typecheck');
+});
+
+test('isOutsideRoot бачить вихід за корінь у всіх трьох формах', () => {
+  expect(isOutsideRoot('../інше-дерево/src/a.ts')).toBe(true);
+  expect(isOutsideRoot('..')).toBe(true);
+  expect(isOutsideRoot('/Users/хтось/проєкт/src/a.ts')).toBe(true);
+  expect(isOutsideRoot('src/shared/config/map.ts')).toBe(false);
 });
 
 test('parseTscErrors розбирає непроменений вивід tsc', () => {
@@ -154,6 +236,16 @@ test('tscNotRun відрізняє вердикт tsc від незапуску 
 
   // Процес не стартував зовсім: коду виходу немає.
   expect(tscNotRun({ status: null, stdout: '', stderr: 'spawn EACCES' }, 0)).toContain(NOT_RUN_PREFIX);
+
+  // Переповнення maxBuffer: процес обірвано, коду виходу немає, але частковий
+  // stdout устиг дати розібрані діагностики. Правило «є діагностики — є
+  // вердикт» пустило б обрізаний результат у кеш ЯК ВЕРДИКТ, на добу вперед.
+  const overflow = {
+    status: null,
+    stdout: 'src/a.ts(1,1): error TS2322: bad.\nsrc/b.ts(2,2): error TS2345: bad.',
+    stderr: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+  };
+  expect(tscNotRun(overflow, 2)).toContain(NOT_RUN_PREFIX);
 });
 
 test('eslintNotRun відрізняє вердикт ESLint від незапуску ESLint', () => {
@@ -240,6 +332,30 @@ test('дерево без інструментів: хук каже вголос
   }
 });
 
+test('справжній вердикт лягає в кеш саме за TYPECHECK_CACHE_DIR', () => {
+  // Єдине місце, де інструменти справді біжать усередині тесту. Воно закріплює
+  // дві речі одразу: що вердикт доходить до lead і що кеш пишеться туди, куди
+  // вказує константа, — а не «десь у .verify».
+  const root = makeWorkingRepo('export const probe: number = "не число";\n');
+  try {
+    const run = runHook(payload({
+      cwd: root,
+      tool_input: { file_path: path.join(root, 'probe.ts') },
+    }));
+    expect(run.status).toBe(0);
+    expect(additionalContext(run.stdout)).toContain('TS2322');
+
+    const cached = readdirSync(path.join(root, TYPECHECK_CACHE_DIR));
+    expect(cached).toHaveLength(1);
+    const errors: unknown = JSON.parse(
+      readFileSync(path.join(root, TYPECHECK_CACHE_DIR, cached[0]), 'utf8'),
+    );
+    expect(Array.isArray(errors) ? errors : []).toHaveLength(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('незапуск не кешується: другий виклик так само гучний', () => {
   // Кеш типів живе добу. Записати в нього «нуль помилок», що насправді означає
   // «tsc не бігло», — це законсервувати брехню на добу вперед: усі наступні
@@ -308,6 +424,46 @@ test('нерозбірний вхід — теж гучно, а не тихо', 
   const nullish = runHook('null');
   expect(nullish.status).toBe(0);
   expect(additionalContext(nullish.stdout)).toContain(NOT_RUN_PREFIX);
+});
+
+test('файл коду під ЧУЖИМ коренем — гучно, а не мовчки', () => {
+  // Виміряно ревю: `cwd` є, але вказує не туди — і хук мовчав, EXIT=0, нуль
+  // байтів. Це плутає «не код» із «код, але не під тим коренем», а друге і є
+  // рівно та небезпека, заради якої R-20 обрав cwd замість $CLAUDE_PROJECT_DIR.
+  const root = makeProbeRepo();
+  const wrongTree = mkdtempSync(path.join(tmpdir(), 'sea-radar-editcheck-wrong-'));
+  try {
+    const run = runHook(payload({
+      cwd: wrongTree,
+      tool_input: { file_path: path.join(root, 'src/shared/config/map.ts') },
+    }));
+    expect(run.status).toBe(0);
+    const context = additionalContext(run.stdout);
+    expect(context).toContain(NOT_RUN_PREFIX);
+    expect(context).toContain('ПОЗА деревом');
+    // Назване обидва: і дерево події, і файл — інакше причину довелося б угадувати.
+    expect(context).toContain(wrongTree);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(wrongTree, { recursive: true, force: true });
+  }
+});
+
+test('не-код під чужим коренем лишається мовчазним', () => {
+  // Межа попереднього тесту: про не-код хук не робить жодного твердження,
+  // тож і кричати нема про що. Без цієї межі кожна правка файлу поза деревом
+  // (цілком законна) сипала б у контекст шум.
+  const wrongTree = mkdtempSync(path.join(tmpdir(), 'sea-radar-editcheck-wrong2-'));
+  try {
+    const run = runHook(payload({
+      cwd: wrongTree,
+      tool_input: { file_path: '/tmp/деінде/нотатки.md' },
+    }));
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe('');
+  } finally {
+    rmSync(wrongTree, { recursive: true, force: true });
+  }
 });
 
 test('корінь береться з поля cwd, а не з $CLAUDE_PROJECT_DIR', () => {

@@ -9,6 +9,8 @@ import { test, expect } from '@playwright/test';
 import {
   SOURCE_PREFIXES,
   SOURCE_FILES,
+  SOURCE_EXTENSIONS,
+  NON_SOURCE_PREFIXES,
   isSourcePath,
   listRepoFiles,
   listSourceFiles,
@@ -90,6 +92,49 @@ test('периметр — рішення, а не випадковість: о�
       '.claude/settings.json',
     ].sort(),
   );
+
+  // Третій вимір периметра, доданий у раунді 1 задачі 9 (R-158), і закріплений
+  // так само поіменно: перелік префіксів не покривав того, що насправді
+  // перевіряють рядки `typecheck` і `lint` реєстру. tsc бере кожен .ts/.tsx у
+  // дереві, ESLint — кожне розширення з цього переліку; тож кореневий
+  // middleware.ts і кореневий postcss.config.mjs перевірялись і НЕ входили в хеш.
+  expect([...SOURCE_EXTENSIONS].sort()).toEqual(
+    ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'].sort(),
+  );
+  expect([...NON_SOURCE_PREFIXES].sort()).toEqual(['node_modules/', 'reference/'].sort());
+});
+
+test('периметр покриває те, що перевіряє tsc: кореневий .ts входить у хеш', () => {
+  // Виміряний наслідок вужчого периметра: з таким файлом у корені
+  // `run.mjs --tier fast --reuse-if-fresh` віддавав `reused: true` і EXIT=0,
+  // поки `tsc -p tsconfig.json --noEmit` друкував TS2322. Гейт відтворював
+  // протухле зелене поверх дерева, яке не проходить тайпчек.
+  expect(isSourcePath('middleware.ts')).toBe(true);
+  expect(isSourcePath('instrumentation.ts')).toBe(true);
+  expect(isSourcePath('docs/example.tsx')).toBe(true);
+  // Той самий провал виміряно й для рядка `lint`: кореневий .mjs із
+  // синтаксичною помилкою давав `eslint .` EXIT=1 і `reused: true` водночас.
+  expect(isSourcePath('postcss.config.mjs')).toBe(true);
+  // Виключення дзеркалять `exclude` у tsconfig.json — і тільки їх.
+  expect(isSourcePath('node_modules/leaflet/index.d.ts')).toBe(false);
+  expect(isSourcePath('reference/geodesy/latlon.ts')).toBe(false);
+  // Не-TypeScript поза префіксами як не входив, так і не входить: розширення
+  // периметра рівно до того, що читає tsc, і ані на файл більше.
+  expect(isSourcePath('docs/tasks/SPRINT-01.md')).toBe(false);
+  expect(isSourcePath('README.md')).toBe(false);
+});
+
+test('кореневий .ts змінює хеш — інакше гейт відтворює зелене поверх зламаного', () => {
+  const root = makeRepo();
+  try {
+    const before = sourceHash(root).hash;
+    // Рівно той файл, яким відтворювався провал гейта.
+    writeFileSync(path.join(root, 'probe-gate-hole.ts'), 'export const x: number = "ні";\n');
+    expect(sourceHash(root).hash).not.toBe(before);
+    expect(sourceHash(root).files).toContain('probe-gate-hole.ts');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('listSourceFiles бере джерельні файли, ігнорує gitignored і не-джерельні', () => {

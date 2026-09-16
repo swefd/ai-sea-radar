@@ -3,6 +3,10 @@
 // не переписування файлу.
 export declare const SOURCE_PREFIXES: readonly string[];
 export declare const SOURCE_FILES: readonly string[];
+/** Розширення, які tsconfig бере звідусіль; периметр свіжості дзеркалить його (R-158). */
+export declare const SOURCE_EXTENSIONS: readonly string[];
+/** Дзеркало `exclude` у tsconfig.json. */
+export declare const NON_SOURCE_PREFIXES: readonly string[];
 export declare function isSourcePath(relPath: string): boolean;
 export declare function listRepoFiles(root: string): string[];
 export declare function listSourceFiles(root: string): string[];

@@ -2,6 +2,8 @@
 // дають TS7016. Заразом це документує публічний API хука.
 export declare const CODE_EXTENSIONS: string[];
 export declare const IGNORED_PREFIXES: string[];
+/** Записи `globalIgnores`, які є іменами файлів, а не теками. */
+export declare const IGNORED_FILES: string[];
 export declare const TYPECHECK_CACHE_DIR: string;
 
 /** Рядок, за яким «перевірки не було» упізнається і оком, і тестом. */
@@ -24,6 +26,8 @@ export interface ToolRun {
   stderr: string;
 }
 
+/** Чи вийшов шлях за межі дерева, яке назвала подія (`..`, `../…`, абсолютний). */
+export declare function isOutsideRoot(relPath: string): boolean;
 export declare function isCheckablePath(relPath: string): boolean;
 export declare function parseTscErrors(stdout: string): TscError[];
 
