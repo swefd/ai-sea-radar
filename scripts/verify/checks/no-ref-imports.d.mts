@@ -7,6 +7,7 @@ export interface RefImportViolation {
   specifier: string;
 }
 
+export declare function blankComments(text: string): string;
 export declare function scanText(relPath: string, text: string): RefImportViolation[];
 export declare function scanForRefImports(root: string): {
   files: string[];

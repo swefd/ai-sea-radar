@@ -2,7 +2,11 @@ import { rmSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
-import { scanForRefImports, scanText } from '../../scripts/verify/checks/no-ref-imports.mjs';
+import {
+  blankComments,
+  scanForRefImports,
+  scanText,
+} from '../../scripts/verify/checks/no-ref-imports.mjs';
 import {
   makeFixtureRepo,
   removeFixture,
@@ -15,6 +19,10 @@ const CHECK = 'no-ref-imports.mjs';
 /** Зручність: у якому файлі:рядку знайдено порушення. */
 const at = (violations: { file: string; line: number }[]): string[] =>
   violations.map((v) => `${v.file}:${v.line}`);
+
+/** Зручність для тестів через `scanText` напряму: форма@рядок. */
+const found = (text: string): string[] =>
+  scanText('probe.ts', text).map((v) => `${v.form}@${v.line}`);
 
 /**
  * Префікс шляху до study material, зібраний із сегментів. Цілого рядка
@@ -116,9 +124,6 @@ test('CSS у периметрі: обгортку url(...) ловить лише
  * зеленими (виміряно, R-48).
  */
 test('scanText: багаторядкову форму видно так само, як однорядкову', () => {
-  const found = (text: string): string[] =>
-    scanText('probe.ts', text).map((v) => `${v.form}@${v.line}`);
-
   // Контрольна група: на однорядкових випадках номери рядків не зсунулися.
   expect(found(`import { bearing } from '${REF}/latlon-spherical.js';\n`))
     .toEqual(['import-from@1']);
@@ -137,6 +142,128 @@ test('scanText: багаторядкову форму видно так само
   // Номер — це рядок КЛЮЧОВОГО СЛОВА, а не рядок специфікатора.
   expect(found(`const a = 1;\nconst b = 2;\nimport {\n  bearing,\n} from '${REF}/dms.js';\n`))
     .toEqual(['import-from@3']);
+});
+
+/**
+ * Один символ у коментарі робив справжній імпорт із `reference/` невидимим.
+ * `[^;]*?` — бар'єр навмисний, але крапка з комою ВСЕРЕДИНІ коментаря інструкції
+ * не завершує; регулярка думала, що завершує. Виміряно до правки: перша вставка
+ * нижче давала `[]`, та сама з комою замість крапки з комою — `import-from@1`.
+ *
+ * Це не теорія: CLAUDE.md ВИМАГАЄ коментаря з назвою походження поруч із
+ * портованим із study material кодом, багаторядкові імпорти — панівний стиль тут,
+ * а коментарі — щільна українська проза, у якій крапка з комою звичайна. Тобто
+ * сканер сліпнув рівно на тому написанні, заради якого існує.
+ */
+test('scanText: коментар усередині імпорту більше його не ховає', () => {
+  // Крапка з комою в коментарі між `import` і `from`.
+  expect(found(`import {\n  // порт; див. upstream\n  bearing,\n} from '${REF}/dms.js';\n`))
+    .toEqual(['import-from@1']);
+  // Прохід 1 лишається ПІДЛОГОЮ: закоментований імпорт видно й далі. Якби другий
+  // прохід замінив перший, а не додався до нього, цей рядок став би порожнім.
+  expect(found(`// import { bearing } from '${REF}/dms.js';\n`)).toEqual(['import-from@1']);
+  // Забілення не зсуває офсети: номер рядка рахується по забіленому тексту, тож
+  // з'їдений перенос у блоковому коментарі вище приписав би порушення не тому
+  // рядку. Тут імпорт починається на п'ятому — і лише другий прохід його бачить.
+  expect(found([
+    '/**',
+    ' * блоковий коментар',
+    ' * на кілька рядків',
+    ' */',
+    'import {',
+    '  // порт; див. upstream',
+    '  bearing,',
+    `} from '${REF}/dms.js';`,
+    '',
+  ].join('\n'))).toEqual(['import-from@5']);
+});
+
+/**
+ * Довжина — навантажений інваріант, а не охайність. Номер рядка рахується як
+ * `text.slice(0, match.index)`, тож забілення, що міняє довжину або їсть переноси,
+ * зсунуло б усі номери нижче. Тест вище ловить лише з'їдений перенос; цей ловить
+ * будь-яку зміну довжини, включно з тією, що номерів поки не чіпає.
+ */
+test('blankComments: довжина й переноси незмінні, крапка з комою зникає', () => {
+  const text = [
+    '/* блок; із крапкою з комою */',
+    "const a = 1; // хвіст; теж із нею",
+    'const b = 2;',
+    '',
+  ].join('\n');
+  const blanked = blankComments(text);
+
+  expect(blanked).toHaveLength(text.length);
+  expect(blanked.split('\n')).toHaveLength(text.split('\n').length);
+  // Код недоторканий, тіла коментарів — самі пробіли, бар'єрів у них не лишилося.
+  expect(blanked.split('\n')[2]).toBe('const b = 2;');
+  expect(blanked.split('\n')[0].trim()).toBe('');
+  expect(blanked.split('\n')[1]).toBe('const a = 1;'.padEnd(text.split('\n')[1].length));
+});
+
+/**
+ * Дві форми, що не збігалися з власним наміром. Обидві правки — в бік ПЕРЕБОРУ.
+ */
+test('scanText: @import без пробілу й require.resolve більше не мовчать', () => {
+  // Валідний CSS: пробіл між директивою й лапкою не обов'язковий.
+  expect(found(`@import'${REF}/base.css';\n`)).toEqual(['css-import@1']);
+  // `proves` називало `require` без застережень, а `.resolve` проходив мовчки.
+  expect(found(`const p = require.resolve('${REF}/dms.js');\n`)).toEqual(['require@1']);
+});
+
+/**
+ * ДІРИ, ЯКІ ЦЕЙ РАУНД СВІДОМО ЛИШАЄ ВІДКРИТИМИ — і які називає `blindSpot`.
+ *
+ * Ці тести існують НЕ щоб закріпити слабкість, а щоб список дір не міг тихо
+ * стати неправдою. Досі `proves` і `blindSpot` торкався єдиний тест — перевірка
+ * довжини рядка в `run.spec.ts`; неправдиве твердження в цих полях не здатен був
+ * спіймати жоден тест, тому проза дрейфувала три раунди поспіль, а ловило її
+ * лише людське око.
+ *
+ * Якщо хтось колись діру закриє — відповідний рядок тут почервоніє й змусить
+ * оновити `blindSpot`. Це переводить його з декорації в навантажене твердження.
+ * Червоний тут означає «онови прозу», а не «поламав сканер».
+ */
+test('blindSpot: названі діри справді є — і почервоніють, коли їх закриють', () => {
+  // `SPECIFIER` вимагає лапок, а `@import url(…)` без лапок — валідний CSS.
+  expect(found(`@import url(${REF}/base.css);\n`)).toEqual([]);
+  // Шлях, зібраний обчисленням: у літералі сегмента `reference` немає взагалі.
+  const BT = '`';
+  expect(found(`const base = '${REF}';\nconst lazy = () => import(${BT}\${base}/dms.js${BT});\n`))
+    .toEqual([]);
+  // Ловиться лише варіант із `path=`; `types=` проходить мовчки.
+  expect(found(`/// <reference types='${REF}/types.d.ts' />\n`)).toEqual([]);
+  // Аліас із `paths` у `tsconfig.json`: сканер бачить літерал, а не те, у що
+  // його розгортає компілятор.
+  expect(found("import { bearing } from '@ref/latlon-spherical.js';\n")).toEqual([]);
+  // Заниження N: ключ дедуплікації — рядок плюс специфікатор, тож ДВА справжні
+  // порушення на одному рядку з тим самим шляхом дають ОДИН рядок звіту. Вердикт
+  // від цього не міняється ніколи (нуль проти не-нуля), лише число.
+  expect(found(`import a from '${REF}/dms.js'; export { b } from '${REF}/dms.js';\n`))
+    .toEqual(['import-from@1']);
+  // Зворотний бік того ж вибору: сканер не парсить мову, тож проза, яка саме
+  // правило ЦИТУЄ, здатна дати хибне спрацювання. Перебір безпечний, недобір — ні.
+  expect(found(`const RULE = ${BT}ніколи: import x from '${REF}/dms.js'${BT};\n`))
+    .toEqual(['import-from@1']);
+});
+
+/**
+ * Остання названа діра, якій потрібне справжнє дерево, а не текст: периметр
+ * звужений за розширенням, і звуження реальне. Той самий `@import`, який у `.css`
+ * ловиться (тест «CSS у периметрі» вище), у `.scss` не читається взагалі.
+ */
+test('blindSpot: розширення поза списком не читається, хоч і в периметрі свіжості', () => {
+  const root = makeFixtureRepo({
+    ...CLEAN_FILES,
+    'src/_pages/home/ui/theme.scss': `@import '${REF}/base.css';\n`,
+  });
+  try {
+    const { files, violations } = scanForRefImports(root);
+    expect(violations).toEqual([]);
+    expect(files).not.toContain('src/_pages/home/ui/theme.scss');
+  } finally {
+    removeFixture(root);
+  }
 });
 
 /**
