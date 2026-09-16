@@ -2,9 +2,10 @@
 // `../reference/...`, in app code or tests, at runtime or at type level».
 // Записане тричі, не стережене нічим — саме той «documented-but-unenforced»
 // інваріант, заради якого спека §4 завела три власні рядки.
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { isEntryPoint } from '../entry-point.mjs';
 import { isSourcePath, listRepoFiles } from '../hash.mjs';
 
 /**
@@ -324,26 +325,11 @@ function main() {
 //
 // Вхідна варта (R-22) тут обов'язкова, а не косметична: за R-12 тести імпортують
 // `scanForRefImports` із цього ж файлу, і без варти імпорт запускав би `main()`
-// із `process.exit()` посеред тестового процесу.
-//
-// Обидва боки — крізь realpathSync. URL модуля Node резолвить крізь симлінк,
-// `process.argv[1]` — ні, тож пряме порівняння під симлінком не кликало `main()`
-// взагалі: нуль байтів виводу, EXIT=0, і `run.mjs` робив із цього PASSED
-// (виміряно). Рядок реєстру має `needs: []`, тобто за R-72 біжить неохороненим,
-// і `emptyProbe` в нього немає — мовчазне зелене нікому було б спіймати.
-function isEntryPoint() {
-  const invoked = process.argv[1];
-  // Не задано — значить, файл не запускали: `node --eval`, REPL, імпорт із тесту.
-  if (invoked === undefined) return false;
-  try {
-    return realpathSync(invoked) === realpathSync(import.meta.filename);
-  } catch {
-    // Шляху не існує (видалили між стартом і цим рядком) — це не запуск нас.
-    return false;
-  }
-}
-
-if (isEntryPoint()) {
+// із `process.exit()` посеред тестового процесу. Форма — у `entry-point.mjs`, туди
+// ж переїхав вимір, який її пояснює. Ціна помилки саме тут вища за середню: рядок
+// реєстру має `needs: []`, тобто за R-72 біжить неохороненим, і `emptyProbe` в нього
+// немає — мовчазне зелене нікому було б спіймати.
+if (isEntryPoint(import.meta.filename)) {
   try {
     main();
   } catch (error) {

@@ -1,5 +1,7 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
@@ -649,5 +651,54 @@ test('передумова браузера дивиться в корінь п�
     else process.env.PLAYWRIGHT_BROWSERS_PATH = saved;
     rmSync(fakeRoot, { recursive: true, force: true });
     rmSync(emptyRoot, { recursive: true, force: true });
+  }
+});
+
+// 8. Вхідна варта самого бігуна. Процес спавниться НАПРЯМУ, без спільного помічника:
+// помічник резолвить шлях до реального за побудовою (`checkPath` → `path.resolve`),
+// тож запуску крізь симлінк виразити не здатен (R-111).
+test('запуск крізь симлінк СПРАВДІ біжить — варта вхідної точки (R-22)', () => {
+  // Фікстура НАВМИСНО така, де правильний код виходу НЕ нуль. Зламана варта дає
+  // нуль байтів виводу і EXIT=0; якби очікуваний код теж був нулем, єдиним червоним
+  // лишилося б «вивід порожній», а тест, який ледве червоніє, стереже мовчазне
+  // зелене гірше, ніж не стереже ніяк. Тут рядок `no-ref-imports` не знаходить у
+  // фікстурному корені власного скрипта, виходить ненульовим кодом і стає FAILED —
+  // тож зламана варта валить і код, і непорожність виводу, і обидва рядки таблиці.
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-runlink-'));
+  const linkDir = mkdtempSync(path.join(tmpdir(), 'sea-radar-runlink-dir-'));
+  const link = path.join(linkDir, 'run-link.mjs');
+  try {
+    // Корінь мусить бути git-деревом: `sourceHash` питає `git ls-files`.
+    execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q'], { cwd: root });
+    writeFileSync(path.join(root, 'package.json'), '{"name":"t"}\n');
+
+    const real = path.resolve(process.cwd(), 'scripts/verify/run.mjs');
+    // Як і в `checkPath`: немає скрипта — тест мусить сказати саме це, а не
+    // видати відсутність файлу за зламану варту.
+    expect(existsSync(real)).toBe(true);
+    symlinkSync(real, link);
+    // Несучий рядок: якби шлях запуску збігався з реальним, тест міряв би
+    // звичайний запуск і був би зелений із будь-якою вартою. На macOS tmpdir іще
+    // й лежить за симлінком (/var → /private/var), але тут різницю створює сам лінк.
+    expect(link).not.toBe(real);
+
+    const result = spawnSync(
+      process.execPath,
+      [link, '--root', root, '--only', 'no-ref-imports'],
+      { encoding: 'utf8' },
+    );
+
+    // Node резолвить URL модуля крізь симлінк, а `process.argv[1]` — ні. Пряме
+    // порівняння тих двох не кликало б `main()` взагалі: нуль байтів виводу і
+    // EXIT=0. Від БІГУНА це найдорожчий різновид мовчання — гачки задач 9-10
+    // звертаються до нього ззовні й читають рівно цей вихід.
+    expect(result.stdout).not.toBe('');
+    expect(result.status).toBe(1);
+    // І бігло саме по фікстурі, а не просто щось надрукувалося.
+    expect(result.stdout).toContain('no-ref-imports');
+    expect(result.stdout).toContain('FAILED');
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });

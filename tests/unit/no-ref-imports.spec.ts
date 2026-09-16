@@ -1,4 +1,6 @@
-import { readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
@@ -8,6 +10,7 @@ import {
   scanText,
 } from '../../scripts/verify/checks/no-ref-imports.mjs';
 import {
+  checkPath,
   makeFixtureRepo,
   removeFixture,
   runCheck,
@@ -694,9 +697,10 @@ test('ігнорований git-ом файл не сканується — п�
 });
 
 /**
- * Єдиний тест через підпроцес. Він стереже не поведінку — її стережуть п'ять тестів
- * вище, — а КОНТРАКТ КОДІВ ВИХОДУ: `run.mjs` відрізняє FAILED від UNRUNNABLE рівно
- * за ними, і більше нізвідки цього не дізнається.
+ * Перший із тестів через підпроцес. Він стереже не поведінку — її стережуть п'ять
+ * тестів вище, — а КОНТРАКТ КОДІВ ВИХОДУ: `run.mjs` відрізняє FAILED від UNRUNNABLE
+ * рівно за ними, і більше нізвідки цього не дізнається. Решта підпроцесних тестів
+ * нижче: вхідна варта й охоплення — обидва про межу ПРОГРАМИ, а не про функції.
  */
 test('CLI: 0 на чистому дереві, 1 на порушенні', () => {
   const clean = makeFixtureRepo(CLEAN_FILES);
@@ -716,5 +720,47 @@ test('CLI: 0 на чистому дереві, 1 на порушенні', () =>
   } finally {
     removeFixture(clean);
     removeFixture(dirty);
+  }
+});
+
+/**
+ * Варта вхідної точки тут правильна ще з попереднього раунду — і досі не була
+ * запінена нічим. Саме тому та сама діра спокійно прожила в `run.mjs` і `hash.mjs`:
+ * правильну форму бачили очима, а стерегти її не стерегло ніщо.
+ *
+ * Процес спавниться НАПРЯМУ, без `runCheck`: помічник резолвить шлях до реального за
+ * побудовою (`checkPath` → `path.resolve`), тож запуску крізь симлінк виразити не
+ * здатен (R-111).
+ */
+test('запуск крізь симлінк СПРАВДІ біжить — варта вхідної точки (R-22)', () => {
+  // Фікстура НАВМИСНО брудна: зламана варта дає нуль байтів виводу і EXIT=0, тож на
+  // чистому дереві очікуваний код теж був би 0 і єдиним червоним лишилося б «вивід
+  // порожній». З порушенням правильний код — 1, і зламана варта валить три
+  // твердження замість одного.
+  const root = makeFixtureRepo({
+    ...CLEAN_FILES,
+    'src/shared/lib/bad.ts': `import x from '${REF}/dms.js';\n`,
+  });
+  const linkDir = mkdtempSync(path.join(tmpdir(), 'sea-radar-check-link-'));
+  const link = path.join(linkDir, 'no-ref-imports-link.mjs');
+  try {
+    const real = checkPath(CHECK);
+    symlinkSync(real, link);
+    // Несучий рядок: якби шлях запуску збігався з реальним, тест міряв би звичайний
+    // запуск і був би зелений із будь-якою вартою.
+    expect(link).not.toBe(real);
+
+    const result = spawnSync(process.execPath, [link, root], { encoding: 'utf8' });
+
+    // Node резолвить URL модуля крізь симлінк, а `process.argv[1]` — ні. Пряме
+    // порівняння тих двох не кликало б `main()` взагалі: порожній вивід, EXIT=0, і
+    // `run.mjs` зробив би з цього PASSED, не прочитавши жодного файлу.
+    expect(result.stdout).not.toBe('');
+    expect(result.status).toBe(1);
+    // І бігло саме по фікстурі, а не просто щось надрукувалося.
+    expect(result.stdout).toContain('src/shared/lib/bad.ts:1:');
+  } finally {
+    removeFixture(linkDir);
+    removeFixture(root);
   }
 });

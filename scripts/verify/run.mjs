@@ -3,6 +3,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 
+import { isEntryPoint } from './entry-point.mjs';
 import { sourceHash } from './hash.mjs';
 import { CHECKS, DEFAULT_TIMEOUT_MS, PRECONDITIONS } from './registry.mjs';
 // Напрямок імпорту односторонній: run.mjs → report.mjs, ніколи навпаки. Тому
@@ -351,10 +352,11 @@ async function main() {
   process.exitCode = report.blocking ? 1 : 0;
 }
 
-// R-22: `import.meta.filename === process.argv[1]` — не конкатенація `file://…`,
-// яка ламається на пробілах і не-ASCII у шляху, а тека worktree — це шлях,
-// який обирали не ми.
-if (import.meta.filename === process.argv[1]) {
+// R-22. Варта обов'язкова, а не косметична: `tests/unit/run.spec.ts` імпортує звідси
+// дев'ять імен (R-48), і без неї імпорт запускав би цілий прогін посеред тестового
+// процесу. Форма — у `entry-point.mjs`: пряме порівняння з `process.argv[1]` стояло
+// тут і під симлінком не кликало `main()` взагалі (виміряно).
+if (isEntryPoint(import.meta.filename)) {
   main().catch((error) => {
     // Зрив самого раннера — невідомий прапорець, цикл у реєстрі, зламаний
     // sourceHash. Стек іде в stderr, а код виходу — блокувальний: тихий нуль

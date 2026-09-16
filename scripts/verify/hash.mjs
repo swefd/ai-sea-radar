@@ -6,6 +6,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { isEntryPoint } from './entry-point.mjs';
+
 /** Теки, вміст яких годує перевірки. */
 export const SOURCE_PREFIXES = [
   // Увесь код застосунку — тут: репозиторій перейшов на Feature-Sliced Design,
@@ -131,7 +133,12 @@ export function sourceHash(root) {
 }
 
 // CLI: без нього питання «чому моє зелене перевикористалось» не має відповіді.
-if (import.meta.filename === process.argv[1]) {
+//
+// R-22. Варта обов'язкова, а не косметична: `tests/unit/hash.spec.ts` імпортує звідси
+// шість імен, і без неї імпорт рахував би хеш і друкував його посеред тестового
+// процесу. Форма — у `entry-point.mjs`: пряме порівняння з `process.argv[1]` стояло
+// тут і під симлінком не кликало цей блок взагалі (виміряно).
+if (isEntryPoint(import.meta.filename)) {
   const result = sourceHash(process.cwd());
   process.stdout.write(`${result.hash}  (${result.fileCount} файлів)\n`);
   if (process.argv.includes('--files')) {

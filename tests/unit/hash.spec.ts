@@ -1,5 +1,7 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync, statSync, utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
@@ -213,5 +215,39 @@ test('зниклий відстежуваний файл не збігаєтьс
   } finally {
     rmSync(gone, { recursive: true, force: true });
     rmSync(literal, { recursive: true, force: true });
+  }
+});
+
+// Процес спавниться НАПРЯМУ, без спільного помічника: помічник резолвить шлях до
+// реального за побудовою, тож запуску крізь симлінк виразити не здатен (R-111).
+test('CLI крізь симлінк СПРАВДІ біжить — варта вхідної точки (R-22)', () => {
+  const root = makeRepo();
+  const linkDir = mkdtempSync(path.join(tmpdir(), 'sea-radar-hash-link-'));
+  const link = path.join(linkDir, 'hash-link.mjs');
+  try {
+    const real = path.resolve(process.cwd(), 'scripts/verify/hash.mjs');
+    // Немає скрипта — тест мусить сказати саме це, а не видати відсутність файлу
+    // за зламану варту.
+    expect(existsSync(real)).toBe(true);
+    symlinkSync(real, link);
+    // Несучий рядок: якби шлях запуску збігався з реальним, тест міряв би
+    // звичайний запуск і був би зелений із будь-якою вартою.
+    expect(link).not.toBe(real);
+
+    const result = spawnSync(process.execPath, [link, '--files'], { cwd: root, encoding: 'utf8' });
+
+    // Код виходу тут не розрізняє НІЧОГО: CLI хешу завжди виходить нулем, і зламана
+    // варта дає той самий нуль. Тому несуть твердження про ЗМІСТ виводу — саме та
+    // друга половина вимоги, без якої тест був би зелений із будь-якою вартою.
+    const { hash, fileCount, files } = sourceHash(root);
+    expect(result.stdout).not.toBe('');
+    expect(result.stdout).toContain(hash);
+    expect(result.stdout).toContain(`(${fileCount} файлів)`);
+    // І бігло саме по фікстурі: `--files` називає її файли поіменно.
+    expect(files.length).toBeGreaterThan(0);
+    for (const relPath of files) expect(result.stdout).toContain(relPath);
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
