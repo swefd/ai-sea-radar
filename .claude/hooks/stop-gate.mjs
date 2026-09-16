@@ -43,12 +43,40 @@ const STDIN_TIMEOUT_MS = 5_000;
 // хук не друкує нічого — а тиша тут читається як дозвіл зупинитися.
 const RUNNER_TIMEOUT_MS = 240_000;
 const COUNTER_TTL_MS = 24 * 60 * 60 * 1000;
-const BLOCKING = new Set(['FAILED', 'NOT_RUN', 'UNRUNNABLE']);
+const STATUS_WIDTH = 'UNRUNNABLE'.length;
+
+/**
+ * Дзеркало `isBlocking` із `run.mjs` (спека §5) — ЗАПЕРЕЧНИЙ перелік, а не
+ * дозвільний: блокує все, що не `PASSED` і не `SKIPPED`.
+ *
+ * Полярність тут несуча. Дозвільний перелік (`new Set(['FAILED', 'NOT_RUN',
+ * 'UNRUNNABLE'])`) робив гейт СТРОГО ПОБЛАЖЛИВІШИМ за раннер, про який він
+ * звітує: рядок без ключа `status`, зі `status: null` чи з невпізнаним словом не
+ * був ні провалом, ні пропуском і падав у гілку тихого зеленого — виміряно
+ * наскрізно, вихід 0 і порожній stdout на чотирьох різних формах. Це той самий
+ * механізм, проти якого загартовано `readReused`: `toStdoutJson` копіює
+ * `r.status` дослівно, а `JSON.stringify` викидає `undefined` мовчки.
+ *
+ * `SKIPPED` не блокує тут із тієї самої причини, що й у раннері без `--no-skip`
+ * (гейт його не просить), і має власні, суворіші гілки в `decide`.
+ */
+function isBlockingStatus(status) {
+  if (status === 'PASSED') return false;
+  if (status === 'SKIPPED') return false;
+  return true;                 // FAILED, NOT_RUN, UNRUNNABLE — і все невпізнане
+}
+
+// Рядок таблиці мусить пережити те, що в нього блокувальним статусом потрапляє
+// і не-рядок, і не-об'єкт: інакше варта полярності вище мінялася б на падіння.
+const cell = (value, fallback) => (
+  typeof value === 'string' && value !== '' ? value : fallback
+);
 
 export function formatFailureTable(results) {
   return results
-    .filter((result) => BLOCKING.has(result?.status))
-    .map((result) => `${result.status.padEnd(10)} ${result.id} — ${result.reason || 'без причини'}`)
+    .filter((result) => isBlockingStatus(result?.status))
+    .map((result) => `${cell(result?.status, 'БЕЗ СТАТУСУ').padEnd(STATUS_WIDTH)} `
+      + `${cell(result?.id, '(без id)')} — ${cell(result?.reason, 'без причини')}`)
     .join('\n');
 }
 
@@ -104,12 +132,21 @@ export function resetBlockCount(root, key) {
  *
  * Запасне значення для читання — 0, і це навмисно сторона «блокувати»: зайве
  * блокування ловить власна межа Claude Code, а пропущене не ловить ніхто.
+ *
+ * Поломка потрапляє в `faults`, а не лише в stderr, і це теж вимірювання, а не
+ * смак: stderr доходить до моделі ЛИШЕ на виході 2, тож на зеленому шляху
+ * (вихід 0) про зламану межу livelock не дізнавався ніхто — ні модель, ні
+ * людина. Тепер вона їде тим самим `systemMessage`, що й решта голосних
+ * поправок до зеленого.
  */
-function guardCounter(action, fallback = undefined) {
+function guardCounter(faults, action, fallback = undefined) {
   try {
     return action();
   } catch (error) {
-    writeAllSync(2, `stop-gate: лічильник блокувань недоступний (${String(error?.message ?? error)})\n`);
+    const reason = String(error?.message ?? error);
+    faults.push(`УВАГА: лічильник блокувань недоступний (${reason}). `
+      + 'Межа livelock цього ходу не працює; вердикт нижче від цього не залежить.');
+    writeAllSync(2, `stop-gate: лічильник блокувань недоступний (${reason})\n`);
     return fallback;
   }
 }
@@ -181,7 +218,7 @@ export function decide(report) {
     return refuse(`раннер повернув нуль рядків, тобто вибірки не було; дерево: ${tree}`);
   }
 
-  const failures = report.results.filter((result) => BLOCKING.has(result?.status));
+  const failures = report.results.filter((result) => isBlockingStatus(result?.status));
   const skipped = report.results.filter((result) => result?.status === 'SKIPPED');
 
   // R-61 дослівно: гейт не має права прочитати вихід 0 із прогону, у якому не
@@ -301,31 +338,37 @@ async function main() {
 
   // 3 + 4 + 5 + 6
   const verdict = decide(runRunner(root));
-  const full = [rootNote, verdict.message].filter((part) => part !== '').join('\n\n');
+  // Текст складається ПІСЛЯ роботи з лічильником, а не до неї: інакше поломка
+  // запобіжника не встигала б потрапити у вже зібране повідомлення.
+  const faults = [];
+  const compose = () => [rootNote, ...faults, verdict.message]
+    .filter((part) => part !== '').join('\n\n');
 
-  if (verdict.kind === 'REFUSE') return loud(full);
+  if (verdict.kind === 'REFUSE') return loud(compose());
 
   if (verdict.kind === 'PASS') {
-    guardCounter(() => resetBlockCount(root, key));
+    guardCounter(faults, () => resetBlockCount(root, key));
     // Зелене мовчить — але тільки коли сказати нічого: пропуск, відтворення з
-    // кешу й запасне дерево кожне робить його іншим твердженням.
+    // кешу, запасне дерево й зламаний лічильник — кожне робить його іншим
+    // твердженням.
+    const full = compose();
     if (full !== '') return loud(full);
     process.exit(0);
   }
 
   // 7 — межа livelock. Межа Claude Code за замовчуванням — 8 блокувань поспіль
   // (змінна CLAUDE_CODE_STOP_HOOK_BLOCK_CAP); наша суворіша за дефолтну.
-  if (guardCounter(() => blockCount(root, key), 0) >= MAX_CONSECUTIVE_BLOCKS) {
-    guardCounter(() => resetBlockCount(root, key));
+  if (guardCounter(faults, () => blockCount(root, key), 0) >= MAX_CONSECUTIVE_BLOCKS) {
+    guardCounter(faults, () => resetBlockCount(root, key));
     return loud(`Гейт блокував ${MAX_CONSECUTIVE_BLOCKS} рази поспіль і більше не блокує. `
-      + `Відкрий відповідь явною заявою «досі червоно, ось що падає»:\n${full}`);
+      + `Відкрий відповідь явною заявою «досі червоно, ось що падає»:\n${compose()}`);
   }
-  guardCounter(() => bumpBlockCount(root, key), 0);
+  guardCounter(faults, () => bumpBlockCount(root, key), 0);
 
   // 6 + 8 — decision/reason ВЕРХНЬОГО рівня (для Stop саме так), вихід 2.
   // Запис — через writeAllSync: асинхронний запис у трубу обрізається синхронним
   // process.exit одразу після нього, і причина блокування прийшла б порожньою.
-  const reason = truncateBytes(full, REASON_MAX_BYTES);
+  const reason = truncateBytes(compose(), REASON_MAX_BYTES);
   writeAllSync(1, `${JSON.stringify({ decision: 'block', reason })}\n`);
   // Дубль у stderr: за виходу 2 документація обіцяє показати моделі саме stderr.
   writeAllSync(2, `${reason}\n`);

@@ -1,6 +1,6 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import { test, expect } from '@playwright/test';
 import {
   REASON_MAX_BYTES,
   MAX_CONSECUTIVE_BLOCKS,
+  COUNTER_DIR,
   GATE_NOT_RUN,
   truncateUtf8,
   formatFailureTable,
@@ -19,6 +20,10 @@ import {
   readReused,
   decide,
 } from '../../.claude/hooks/stop-gate.mjs';
+// Типи — окремим `import type`: Babel стирає лише те, про що знає напевно, а
+// декларації перевіряє тільки `check-types` (R-48), і саме вжиток тут робить
+// їхнє зникнення помітним.
+import type { CheckResult, GateKind, GateVerdict } from '../../.claude/hooks/stop-gate.mjs';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const HOOK = path.join(ROOT, '.claude/hooks/stop-gate.mjs');
@@ -57,12 +62,13 @@ test('truncateUtf8 тримає навіть ліміт, менший за са�
 });
 
 test('formatFailureTable друкує статус, id і причину — і лише блокувальні рядки', () => {
-  const table = formatFailureTable([
+  const rows: CheckResult[] = [
     { id: 'typecheck', status: 'FAILED', reason: 'TS2322 у src/shared/config/map.ts' },
     { id: 'lint', status: 'PASSED', reason: '' },
     { id: 'build', status: 'NOT_RUN', reason: 'впав typecheck' },
     { id: 'e2e', status: 'UNRUNNABLE', reason: 'spawn ENOENT' },
-  ]);
+  ];
+  const table = formatFailureTable(rows);
   expect(table).toContain('FAILED');
   expect(table).toContain('typecheck');
   expect(table).toContain('TS2322');
@@ -98,6 +104,11 @@ test('лічильник рахує поспіль і скидається', () 
     resetBlockCount(root, 'p-1');
     expect(blockCount(root, 'p-1')).toBe(0);
     expect(blockCount(root, 'p-2')).toBe(1); // чуже скидання свого не чіпає
+    // Шлях у тесті стоїть ЛІТЕРАЛОМ — це контракт на диску, і брати його з того
+    // самого модуля означало б звіряти реалізацію саму з собою. Константа
+    // звіряється з літералом окремо, бо імпорт зі спека — єдине, що взагалі
+    // стереже декларацію (R-48): `check-types` `.mjs` не читає.
+    expect(COUNTER_DIR).toBe('.verify/gate-counter');
     expect(readdirSync(path.join(root, '.verify/gate-counter')).length).toBeGreaterThan(0);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -130,6 +141,12 @@ const GREEN: { id: string; status: Status }[] = [
   { id: 'typecheck', status: 'PASSED' },
   { id: 'lint', status: 'PASSED' },
 ];
+
+/** Вердикт у двох іменованих типах — інакше їх не перевіряє ніщо (R-48). */
+function kindOf(report: unknown): GateKind {
+  const verdict: GateVerdict = decide(report);
+  return verdict.kind;
+}
 
 /**
  * Три значення, а не два, — і саме на цьому тесті ламаються обидві правдоподібні
@@ -219,6 +236,36 @@ test('кожен блокувальний статус блокує сам по 
 });
 
 /**
+ * Полярність. `isBlocking` раннера (`run.mjs`, спека §5) — ЗАПЕРЕЧНИЙ перелік:
+ * блокує все, що не `PASSED` і не `SKIPPED`. Дозвільний перелік у гейті робив би
+ * його строго поблажливішим за раннер, про який він звітує: рядок без ключа
+ * `status` не є ні провалом, ні пропуском і падав у гілку тихого зеленого —
+ * виміряно наскрізно, вихід 0 і порожній stdout. Мутація «повернути дозвільний
+ * перелік» червонить саме цей тест і більше жоден, тож без нього полярність не
+ * пришпилена в жоден бік.
+ */
+test('невпізнаний, відсутній або зіпсований status БЛОКУЄ, як і в раннері', () => {
+  const broken: unknown[][] = [
+    [{ id: 'typecheck', reason: 'ключ status загублено', durationMs: 1 }],
+    [{ id: 'typecheck', status: 'ЩОСЬ', reason: '', durationMs: 1 }],
+    [{ id: 'typecheck', status: null, reason: '', durationMs: 1 }],
+    [null],
+    [1, 2],
+  ];
+  for (const rows of broken) {
+    expect(kindOf(envelope(GREEN, { results: rows }))).toBe('BLOCK');
+  }
+  // І таблиця при цьому лишається читаною, а не падає на не-рядку.
+  const table = formatFailureTable([
+    { id: 'typecheck', reason: 'без status' },
+    null,
+  ] as unknown as CheckResult[]);
+  expect(table).toContain('БЕЗ СТАТУСУ');
+  expect(table).toContain('typecheck');
+  expect(table).toContain('(без id)');
+});
+
+/**
  * Порожній вибір — НЕ «усе пропущено»: це два різні стани (R-61 і R-63). Усі
  * рядки `SKIPPED` означає, що щось бігло й нічого не довело; нуль рядків — що
  * раннер відмовляється звітувати про вибірку, якої не робив. Тому тест питає не
@@ -278,13 +325,31 @@ interface GateRun {
   stderr: string;
 }
 
-function runGate(root: string, input: unknown, promptId = 'p-1'): GateRun {
+/**
+ * Запуск гейта в пробному дереві. `cwd` і `CLAUDE_PROJECT_DIR` вказують на те
+ * саме дерево НАВІТЬ тоді, коли вхідний JSON кореня не називає, і це не
+ * надмірність: варта не-об'єкта стоїть до вибору кореня, тож мутація, яка її
+ * прибирає, відправляє гейт запасним шляхом — у СПРАВЖНІЙ репозиторій. Під час
+ * ревю саме цей шлях записав `.verify/gate-counter/unknown` у робоче дерево й
+ * вибив 60-секундний таймаут. Тест, герметичний лише поки реалізація правильна,
+ * герметичний рівно тоді, коли він не потрібен.
+ */
+function runGate(
+  root: string,
+  input: unknown,
+  { promptId = 'p-1', script = HOOK }: { promptId?: string; script?: string } = {},
+): GateRun {
   const text = input === undefined
     ? JSON.stringify({
       session_id: 's-1', prompt_id: promptId, cwd: root, hook_event_name: 'Stop', stop_hook_active: false,
     })
     : JSON.stringify(input);
-  const result = spawnSync(process.execPath, [HOOK], { encoding: 'utf8', input: text });
+  const result = spawnSync(process.execPath, [script], {
+    encoding: 'utf8',
+    input: text,
+    cwd: root,
+    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+  });
   if (result.error) throw result.error;
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -354,18 +419,49 @@ test('поломка лічильника не скасовує вже ухва�
     const output = JSON.parse(run.stdout) as { decision?: string; reason?: string };
     expect(output.decision).toBe('block');
     expect(output.reason).toContain('typecheck');
+    // І поломка названа в самій причині, а не лише у stderr.
+    expect(output.reason).toContain('лічильник блокувань недоступний');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
+/**
+ * Той самий збій на ЗЕЛЕНОМУ шляху. Там вихід 0, а за документацією stderr
+ * доходить до моделі лише на виході 2 — тобто поломка межі livelock не
+ * діставалася нікого: ні моделі, ні людини. Тепер вона їде `systemMessage`,
+ * тим самим каналом, що й решта голосних поправок до зеленого.
+ */
+test('поломка лічильника на зеленому не тоне у stderr — вона в systemMessage', () => {
+  const root = makeProbeRoot(fakeRunner(envelope(GREEN)));
+  try {
+    writeFileSync(path.join(root, '.verify'), 'не тека\n');
+    const run = runGate(root, undefined);
+    expect(run.status).toBe(0);
+    expect(systemMessage(run.stdout)).toContain('лічильник блокувань недоступний');
+    expect(systemMessage(run.stdout)).toContain('livelock');
+    expect(run.stderr).toContain('лічильник блокувань недоступний'); // людині — те саме
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Твердження — про ПРИЧИНУ, а не лише про код виходу: без варти не-об'єкта вхід
+ * `null` дає той самий вихід 0 і той самий `ГЕЙТ НЕ ВІДПРАЦЮВАВ` через
+ * `main().catch`, тож перевірка «сталося щось гучне» на ньому впасти не може.
+ * Різниця рівно в тексті: варта каже, ЩО з входом, а падіння — що впало.
+ */
 test('валідний JSON, який не є об’єктом, — гучна відмова, а не стектрейс', () => {
   const root = makeProbeRoot(fakeRunner(envelope(GREEN)));
   try {
-    for (const input of [null, 42, 'рядок']) {
+    for (const input of [null, 42, 'рядок', ['масив']]) {
       const run = runGate(root, input);
       expect(run.status).toBe(0);
       expect(systemMessage(run.stdout)).toContain(GATE_NOT_RUN);
+      expect(systemMessage(run.stdout)).toContain("вхід гейта не є об'єктом");
+      // Раннер не кликали: вхід відкинуто до того, як гейт вибрав дерево.
+      expect(existsSync(path.join(root, 'runner-ran.txt'))).toBe(false);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -411,9 +507,9 @@ test('свіже зелене скидає лічильник і проходи�
 test('межа livelock: третє поспіль блокування не блокує, а вимагає сказати вголос', () => {
   const root = makeProbeRoot(fakeRunner(envelope(RED), 1));
   try {
-    const first = runGate(root, undefined, 'p-livelock');
-    const second = runGate(root, undefined, 'p-livelock');
-    const third = runGate(root, undefined, 'p-livelock');
+    const first = runGate(root, undefined, { promptId: 'p-livelock' });
+    const second = runGate(root, undefined, { promptId: 'p-livelock' });
+    const third = runGate(root, undefined, { promptId: 'p-livelock' });
     expect([first.status, second.status, third.status]).toEqual([2, 2, 0]);
     expect(systemMessage(third.stdout)).toContain('досі червоно, ось що падає');
     expect(systemMessage(third.stdout)).toContain('typecheck');
@@ -421,7 +517,90 @@ test('межа livelock: третє поспіль блокування не б�
     // одразу за межею і гейт не заблокував би ЖОДНОГО разу.
     expect(existsSync(path.join(root, '.verify/gate-counter/p-livelock'))).toBe(false);
     // Інший промпт межі не успадковує.
-    expect(runGate(root, undefined, 'p-other').status).toBe(2);
+    expect(runGate(root, undefined, { promptId: 'p-other' }).status).toBe(2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Варта вхідної точки. `import.meta.filename === process.argv[1]` під симлінком
+ * НЕ кликало б `main()` зовсім: Node резолвить URL модуля крізь симлінк, а
+ * `argv[1]` лишає як дали. Для звичайної перевірки ціна тієї дірки — різниця між
+ * «PASSED» і «нічого не бігло»; для Stop-гейта — між «блокую» і «зупиняйся, все
+ * гаразд». Сюїта стерегла це лише непрямо, у чужому спеку.
+ */
+test('варта вхідної точки: запуск крізь симлінк усе одно блокує', () => {
+  const root = makeProbeRoot(fakeRunner(envelope(RED), 1));
+  const linkDir = mkdtempSync(path.join(tmpdir(), 'sea-radar-gate-link-'));
+  const link = path.join(linkDir, 'stop-gate-link.mjs');
+  symlinkSync(HOOK, link);
+  try {
+    const run = runGate(root, undefined, { script: link });
+    expect(run.status).toBe(2);
+    const output = JSON.parse(run.stdout) as { decision?: string; reason?: string };
+    expect(output.decision).toBe('block');
+    expect(output.reason).toContain('typecheck');
+    expect(existsSync(path.join(root, 'runner-ran.txt'))).toBe(true);
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Бюджет `REASON_MAX_BYTES` жив лише в чистих тестах `truncateUtf8` і не
+ * приводився в дію ЖОДНИМ шляхом блокування — мутація «ніколи не обрізати
+ * reason» виживала. Тут таблиця провалів навмисно більша за бюджет.
+ */
+test('причина блокування тримає байтовий бюджет, а JSON лишається цілим', () => {
+  const rows = Array.from({ length: 40 }, (_, index) => ({
+    id: `перевірка-${index}`,
+    status: 'FAILED' as Status,
+    reason: 'дуже довга причина українською '.repeat(10),
+  }));
+  const root = makeProbeRoot(fakeRunner(envelope(rows), 1));
+  try {
+    const run = runGate(root, undefined);
+    expect(run.status).toBe(2);
+    const output = JSON.parse(run.stdout) as { reason?: string };
+    const reason = String(output.reason);
+    expect(Buffer.byteLength(reason, 'utf8')).toBeGreaterThan(REASON_MAX_BYTES / 2);
+    expect(Buffer.byteLength(reason, 'utf8')).toBeLessThanOrEqual(REASON_MAX_BYTES);
+    expect(reason).toContain('обрізано');
+    expect(reason).not.toContain('�'); // жодної літери, розрізаної навпіл
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Крок 1 спеки: зависле читання stdin не має вішати хід — але й НЕ має тихо
+ * вважатися порожнім входом, бо порожнє читання загубило б `prompt_id` і
+ * вимкнуло межу livelock. Гілку `!ok` не приводило в дію ніщо: `spawnSync`
+ * завжди закриває stdin, тож дістатися до неї можна лише асинхронним запуском,
+ * у якому труба лишається відкритою.
+ */
+test('зависле читання stdin не вважається порожнім входом', async () => {
+  const root = makeProbeRoot(fakeRunner(envelope(RED), 1));
+  try {
+    const child = spawn(process.execPath, [HOOK], {
+      cwd: root,
+      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    // stdin навмисно НЕ закривається — гейт мусить вийти сам, за своїм таймаутом.
+    const status = await new Promise<number | null>((resolve) => {
+      child.on('close', (code) => resolve(code));
+    });
+    expect(status).toBe(0);
+    expect(systemMessage(stdout)).toContain(GATE_NOT_RUN);
+    expect(systemMessage(stdout)).toContain('не прочитано');
+    // Раннера не кликали: без входу невідомо навіть, яке дерево перевіряти.
+    expect(existsSync(path.join(root, 'runner-ran.txt'))).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
