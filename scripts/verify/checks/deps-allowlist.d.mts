@@ -15,3 +15,17 @@ export declare const ALLOWED: {
  * документувати найважливішу гілку як порушення типів.
  */
 export declare function checkManifest(manifest: unknown): string[];
+
+export interface DenyRule {
+  rule: string;
+  why: string;
+  names: string[];
+  scopes: string[];
+}
+
+/**
+ * Експортується заради одного тесту — «перетин ALLOWED і DENIED порожній». Поки той
+ * перетин порожній, пріоритет між двома списками не спостережний жодним іншим
+ * способом: його розворот лишає всі тести зеленими.
+ */
+export declare function deniedRule(name: string): DenyRule | undefined;

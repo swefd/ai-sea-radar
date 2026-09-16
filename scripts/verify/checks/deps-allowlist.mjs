@@ -45,22 +45,47 @@ export const ALLOWED = {
 
 const KNOWN_BLOCKS = Object.keys(ALLOWED);
 
-/** Пакет у будь-якому з цих блоків обійшов би allowlist — тому блоків не має бути взагалі. */
-const FORBIDDEN_BLOCKS = [
-  'peerDependencies',
-  'optionalDependencies',
-  'bundledDependencies',
-  'bundleDependencies',
-  'overrides',
-  'resolutions',
+/**
+ * Дозволені ключі ВЕРХНЬОГО рівня. Усе інше в `package.json` — розбіжність.
+ *
+ * Тут стояв денилист блоків (`peerDependencies`, `overrides`, `resolutions`, …), і
+ * він був неправильною формою правила. Виміряно на a11cc12, на копії справжнього
+ * маніфесту: `workspaces: ["packages/*"]` → EXIT=0, `pnpm: { overrides: … }` →
+ * EXIT=0, `bun: { overrides: … }` → EXIT=0. Три маршрути повз перевірку, і список
+ * не закінчувався: вкладені поля інструментів (`npm`, `pnpm`, `yarn`, `bun`, і які
+ * ще з'являться) ніхто не перелічить до кінця. Денилист не вміє сказати, чого в
+ * ньому бракує, — тому наступний маршрут лишався б НЕВИДИМИМ.
+ *
+ * Allowlist може: незнайомий ключ провалює перевірку, навіть якщо про нього ніхто
+ * не думав. Ціна — цей літерал треба оновлювати разом із `package.json`, рівно як
+ * і `ALLOWED`; це та сама ціна, і платиться вона свідомо.
+ *
+ * Звірка тут ОДНОБІЧНА, на відміну від `ALLOWED`: питається лише «чи немає зайвого
+ * ключа», не «чи всі на місці». Асиметрія принципова — ВІДСУТНІЙ ключ не може
+ * завести залежність, а присутній незнайомий може.
+ */
+const ALLOWED_TOP_LEVEL = [
+  'name',
+  'version',
+  'private',
+  'scripts',
+  'dependencies',
+  'devDependencies',
 ];
 
 /**
  * Denylist НЕ заміняє allowlist і не додає до нього НІ ОДНОГО спійманого пакета:
- * усе, що він перелічує, вже провалюється як «немає в узгодженому наборі», бо
- * читається лише всередині гілки «пакета немає в ALLOWED». Виміряно: усі 29 імен і
- * скоупів звідси дають рівно одну розбіжність і з `DENIED`, і з порожнім `DENIED`;
- * назву правила при цьому несуть 29 повідомлень проти 0.
+ * усе, що він перелічує, вже провалюється як «немає в узгодженому наборі». Це
+ * структурно, а не випадково — `deniedRule` читається ЛИШЕ всередині гілки «пакета
+ * немає в ALLOWED», — але спирається на передумову: списки не перетинаються.
+ * Передумова пришпилена тестом «перетин ALLOWED і DENIED порожній», бо поки перетин
+ * порожній, пріоритет між двома списками не спостережний: його розворот лишає всі
+ * тести зеленими (виміряно).
+ *
+ * Число, з анкером, бо воно проживе рівно до наступної правки цього літерала:
+ * виміряно на a11cc12 — усі 29 імен і скоупів звідси дають рівно одну розбіжність
+ * і з `DENIED`, і з порожнім `DENIED`; назву правила при цьому несуть 29
+ * повідомлень проти 0.
  *
  * Тобто його єдина робота — назвати зламане правило замість безликого «невідомий
  * пакет»: повідомлення, що називає причину, лагодять, а не глушать. Він слабший за
@@ -103,21 +128,40 @@ function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Що саме дісталося замість об'єкта — у повідомленні, бо «не об'єкт» само по собі не лагодять. */
+/**
+ * Що саме дісталося замість об'єкта — у повідомленні, бо «не об'єкт» само по собі не
+ * лагодять. Назви українською всі, а не лише дві: «(масив)» поруч із «(number)» в
+ * одному реченні — це не дрібниця стилю, а слід від того, що перелік дописували не
+ * думаючи, і читач справедливо питає, чи так само дописували правила.
+ */
 function describeShape(value) {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'масив';
-  return typeof value;
+  const NAMES = { string: 'рядок', number: 'число', boolean: 'булеве', undefined: 'undefined' };
+  return NAMES[typeof value] ?? typeof value;
 }
 
-function deniedRule(name) {
+/**
+ * Правило денилиста, зламане цим іменем, або `undefined`. Експортується заради тесту
+ * на порожній перетин з `ALLOWED` — див. коментар над `DENIED`.
+ */
+export function deniedRule(name) {
   return DENIED.find(
     (entry) => entry.names.includes(name) || entry.scopes.some((scope) => name.startsWith(scope)),
   );
 }
 
+// `Object.hasOwn`, а не `!== undefined`, у ВСІХ трьох лукапах нижче: імена пакетів
+// приходять із чужого JSON, а `{"constructor": "1.0.0"}` інакше знаходив собі
+// «узгоджену версію» в Object.prototype. Мовчазного зеленого це не давало — рядок
+// був розбіжністю, — але текст виходив нечитабельний («узгоджено function Object()
+// { [native code] }»), а `allowedBlockOf` на таких іменах просто брехав.
+function allowedVersionOf(block, name) {
+  return Object.hasOwn(ALLOWED[block], name) ? ALLOWED[block][name] : undefined;
+}
+
 function allowedBlockOf(name) {
-  return KNOWN_BLOCKS.find((block) => ALLOWED[block][name] !== undefined);
+  return KNOWN_BLOCKS.find((block) => Object.hasOwn(ALLOWED[block], name));
 }
 
 /**
@@ -138,15 +182,19 @@ export function checkManifest(manifest) {
 
   const problems = [];
 
-  for (const block of FORBIDDEN_BLOCKS) {
-    if (manifest[block] !== undefined) {
-      problems.push(`блок "${block}" заборонений: залежність у ньому пройшла б повз allowlist`);
+  for (const key of Object.keys(manifest)) {
+    if (!ALLOWED_TOP_LEVEL.includes(key)) {
+      problems.push(
+        `ключ "${key}" не дозволений на верхньому рівні: звіряються лише `
+        + `${KNOWN_BLOCKS.join(" і ")}, тож залежності, заведені через будь-який інший `
+        + 'ключ, ця перевірка не побачить',
+      );
     }
   }
 
   const present = (name) => KNOWN_BLOCKS.some((block) => {
     const actual = manifest[block];
-    return isPlainObject(actual) && actual[name] !== undefined;
+    return isPlainObject(actual) && Object.hasOwn(actual, name);
   });
 
   for (const block of KNOWN_BLOCKS) {
@@ -166,8 +214,11 @@ export function checkManifest(manifest) {
     }
 
     for (const [name, version] of Object.entries(actual)) {
-      const expected = ALLOWED[block][name];
+      const expected = allowedVersionOf(block, name);
 
+      // Тут і тільки тут визначено пріоритет: allowlist питається ПЕРШИМ, денилист
+      // отримує слово, лише коли пакета в `ALLOWED` немає. Поки перетин списків
+      // порожній, цей порядок не спостережний — див. коментар над `DENIED`.
       if (expected === undefined) {
         const home = allowedBlockOf(name);
         const rule = deniedRule(name);
@@ -191,7 +242,7 @@ export function checkManifest(manifest) {
     // `present` гасить дубль, коли пакет не зник, а переїхав у сусідній блок —
     // про переїзд уже сказано рядком вище.
     for (const name of Object.keys(ALLOWED[block])) {
-      if (actual[name] === undefined && !present(name)) {
+      if (!Object.hasOwn(actual, name) && !present(name)) {
         problems.push(`${block}.${name}: узгоджена залежність зникла з package.json`);
       }
     }

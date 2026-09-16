@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { ALLOWED, checkManifest } from '../../scripts/verify/checks/deps-allowlist.mjs';
+import { ALLOWED, checkManifest, deniedRule } from '../../scripts/verify/checks/deps-allowlist.mjs';
 import {
   makeFixtureDir,
   removeFixture,
@@ -75,6 +75,63 @@ test('інші блоки залежностей заборонені — іна
   expect(problems.join('\n')).toContain('peerDependencies');
 });
 
+test('незнайомий ключ верхнього рівня — розбіжність, хай би ким він був', () => {
+  // Раніше тут стояв денилист блоків, і повз нього ЗМІРЯНО проходили три маршрути
+  // (на a11cc12, на копії справжнього маніфесту): `workspaces`, `pnpm.overrides`,
+  // `bun.overrides` — усі три давали EXIT=0 і «усі в узгодженому наборі». Список не
+  // закінчувався, бо вкладених полів інструментів ніхто не перелічить до кінця.
+  //
+  // Тому тест перелічує не «заборонене», а стверджує ПРАВИЛО: будь-який ключ поза
+  // дозволеними — розбіжність. Два останні входи вигадані навмисно: якщо перевірка
+  // ловить і їх, вона ловить клас, а не мої приклади.
+  const routes: Record<string, unknown>[] = [
+    { workspaces: ['packages/*'] },
+    { pnpm: { overrides: { react: '18' } } },
+    { bun: { overrides: { react: '18' } } },
+    { yarn: { resolutions: { react: '18' } } },
+    { 'ще-не-вигаданий-менеджер': { overrides: {} } },
+    { somethingCompletelyUnrelated: 1 },
+  ];
+
+  for (const route of routes) {
+    const key = Object.keys(route)[0];
+    const problems = checkManifest({ ...agreedManifest(), ...route });
+    expect(problems, key).toHaveLength(1);
+    expect(problems[0], key).toContain(`ключ "${key}"`);
+  }
+});
+
+test('перетин ALLOWED і DENIED порожній', () => {
+  // Пріоритет між двома списками визначено гілкою `expected === undefined` у
+  // `checkManifest`: allowlist питається першим. Але поки перетин порожній, цей
+  // порядок НЕ СПОСТЕРЕЖНИЙ — розворот пріоритету лишає всі тести зеленими
+  // (виміряно). Тобто припущення «жоден узгоджений пакет не стоїть у денилисті»
+  // тримає код, а не перевіряє ніщо.
+  //
+  // Цей тест і робить припущення видимою розтяжкою: щойно хтось внесе DENIED-ім'я
+  // в ALLOWED, тут стане червоно — і доведеться вирішити свідомо, а не дізнатися
+  // про це з того, що правило «підготовка до R2» мовчки перестало діяти.
+  const agreedNames = Object.values(ALLOWED).flatMap((packages) => Object.keys(packages));
+  expect(agreedNames.length).toBeGreaterThan(0);
+
+  const collisions = agreedNames.filter((name) => deniedRule(name) !== undefined);
+  expect(collisions).toEqual([]);
+});
+
+test('успадковане імʼя пакета не знаходить собі «узгодженої версії» в Object.prototype', () => {
+  // Виміряно на a11cc12: `{"constructor": "1.0.0"}` давало рядок «узгоджено function
+  // Object() { [native code] }». Мовчазного зеленого не було — розбіжність
+  // рахувалася, — але повідомлення не читалося, а `allowedBlockOf` на таких іменах
+  // брехав, ніби пакет десь узгоджений. `Object.hasOwn` у трьох лукапах.
+  for (const name of ['constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+    const problems = checkManifest(agreedManifest({ dependencies: { [name]: '1.0.0' } }));
+    expect(problems, name).toHaveLength(1);
+    expect(problems[0], name).toContain(`dependencies.${name}`);
+    expect(problems[0], name).toContain('немає в узгодженому наборі');
+    expect(problems[0], name).not.toContain('native code');
+  }
+});
+
 test('узгоджена залежність, що зникла, — теж розбіжність', () => {
   const manifest = agreedManifest();
   const dependencies = { ...(manifest.dependencies as Record<string, string>) };
@@ -123,8 +180,10 @@ test('CLI: код 1 на розбіжності, 0 після відкоту', (
 
 // R-113 у варіанті для однієї перевірки одного файлу. Лічильника охоплення тут немає —
 // сканувати нічого, — але клас той самий: перевірка звітує успіх, не прочитавши того,
-// про що звітує. Чотири входи в цей клас нижче, і жоден із них не має давати «усі в
-// узгодженому наборі».
+// про що звітує. Нижче — чотири входи з нотаток і п'ятий, знайдений під час роботи
+// (блок, що не є об'єктом); жоден із них не має давати «усі в узгодженому наборі».
+// Числа тут навмисно не підсумовано одним: перелік входів у клас за визначенням
+// не закритий, і «чотири» вже одного разу протухло за один раунд.
 //
 // Перші три — про сам ФАЙЛ, тому й перевіряються через підпроцес: несуче в них саме
 // код виходу, а `run.mjs` бачить лише його. Код 2, не 1, і не тому, що 2 суворіше:
@@ -156,7 +215,7 @@ test(`R-113: package.json відсутній, зламаний або не є о
 });
 
 test('R-113: маніфест без блоків залежностей — розбіжність, а не «усі в узгодженому наборі»', () => {
-  // Найпідступніший із чотирьох входів: package.json без `dependencies` справді не
+  // Найпідступніший із них: package.json без `dependencies` справді не
   // містить ЗАЙВИХ залежностей, тож «зайвого немає» — технічно правда. Варти тут
   // немає й не треба: allowlist звіряється в ОБИДВА боки, і саме друга його половина
   // робить цей вхід червоним — кожна узгоджена залежність названа як зникла.
@@ -185,10 +244,22 @@ test(`блок залежностей, що не є об'єктом, назва�
   // `"dependencies": "leaflet"` без варти дало б рядок на кожну ЛІТЕРУ — `Object.entries`
   // над рядком повертає його символи; `"dependencies": null` — TypeError звідти ж.
   // Обидва — та сама підміна причини, лише на рівень нижче за випадок вище.
-  for (const value of ['leaflet', null, 7]) {
+  //
+  // Назва форми звіряється разом із рештою і саме українською: «(масив)» поруч із
+  // «(number)» в одному реченні — слід від переліку, який дописували не думаючи, а
+  // читач справедливо переносить цю підозру на правила.
+  const shapes: [unknown, string][] = [
+    ['leaflet', 'рядок'],
+    [null, 'null'],
+    [7, 'число'],
+    [true, 'булеве'],
+    [['leaflet'], 'масив'],
+  ];
+
+  for (const [value, shape] of shapes) {
     const problems = checkManifest({ ...agreedManifest(), dependencies: value });
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('dependencies');
-    expect(problems[0]).toContain(`не є об'єктом`);
+    expect(problems, shape).toHaveLength(1);
+    expect(problems[0], shape).toContain('dependencies');
+    expect(problems[0], shape).toContain(`не є об'єктом (${shape})`);
   }
 });
