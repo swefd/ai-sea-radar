@@ -1,10 +1,10 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
-import { scanForSecrets } from '../../scripts/verify/checks/no-secrets.mjs';
+import { scanForSecrets, scanLine } from '../../scripts/verify/checks/no-secrets.mjs';
 import {
   checkPath,
   makeFixtureRepo,
@@ -206,6 +206,83 @@ test('бінарний файл пропускається — і пропуск
   }
 });
 
+test('нуль оглянутих файлів — це ПРОВАЛ, а не «знахідок немає»', () => {
+  // Порожній репозиторій: `git ls-files` не віддає нічого, отже сканувати нема чого.
+  const root = makeFixtureRepo({});
+  try {
+    const result = runCheck(CHECK, root);
+
+    // Код 2, а не 0. Нуль оглянутих файлів раніше друкував «знахідок немає» і
+    // виходив 0, тобто `run.mjs` малював PASSED для перевірки, яка не прочитала
+    // жодного файлу. Статус, що читається як успіх, коли не бігло нічого, — це
+    // характерний провал цього шару, а не дрібниця.
+    expect(result.code).toBe(2);
+    // 2, а не 1: обидва блокують однаково (classifyExit), але код відрізняє «не було
+    // чого сканувати» від «знайдено ключ» для того, хто бачить лише код виходу.
+    expect(result.code).not.toBe(1);
+    expect(result.stderr).not.toBe('');
+    expect(result.stderr).toContain('нічого не оглянула');
+    // Причина мусить читатися як «не було що дивитися», а не як знахідка: статус
+    // FAILED тут той самий, що й при справжньому ключі, і єдине, що їх розрізняє, —
+    // цей рядок.
+    expect(result.stderr).not.toContain('знайдено');
+    expect(result.stdout).not.toContain('знахідок немає');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('файл, що зник між переліком і читанням, рахується окремо і не валить прогін', () => {
+  const root = makeFixtureRepo(CLEAN_FILES);
+  const clean = makeFixtureRepo(CLEAN_FILES);
+  try {
+    // Гонка з R-05 відтворюється детерміновано: файл у ІНДЕКСІ, але не на диску.
+    // `git ls-files -c` віддає його з кешу, `readFileSync` дає ENOENT — рівно те,
+    // що буває, коли між переліком і читанням хтось видалив файл.
+    execFileSync('git', ['add', '-A'], { cwd: root });
+    rmSync(path.join(root, 'docs/tasks/SPRINT-01.md'));
+
+    const { scanned, vanished, findings } = scanForSecrets(root);
+    expect(vanished).toBe(1);
+    expect(scanned).toBe(Object.keys(CLEAN_FILES).length - 1);
+    expect(findings).toEqual([]);
+
+    // Порахований пропуск мусить бути ВИДИМИМ — інакше він читається як «оглянуто».
+    const result = runCheck(CHECK, root);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('зникло під час читання — 1');
+
+    // І — друга половина вимоги — у нормальному прогоні рядок НЕ росте.
+    expect(runCheck(CHECK, clean).stdout).not.toContain('зникло під час читання');
+  } finally {
+    removeFixture(clean);
+    removeFixture(root);
+  }
+});
+
+test('scanLine бачить УСІ збіги рядка, не лише перший', () => {
+  // Три збіги в одному рядку: два одного шаблону плюс один іншого. Обидва
+  // специфікатори зібрані з частин (R-13) — літерала-збігу в цьому файлі немає.
+  const line = `${SYNTHETIC} ${SYNTHETIC_URL} ${SYNTHETIC}`;
+
+  const found = scanLine(line);
+  // `if` замість `while` дав би 2: по першому збігу з кожного шаблону.
+  expect(found).toHaveLength(3);
+  expect(found.map((item) => item.pattern)).toContain('aws-access-key-id');
+  expect(found.map((item) => item.pattern)).toContain('url-credentials');
+
+  // Повторний виклик на тому самому рядку. ЦЕ ТВЕРДЖЕННЯ НЕ ДОВОДИТЬ скидання
+  // `lastIndex` — виміряно за R-50: зняти те скидання, і сюїта лишається зеленою.
+  // Причина в §11.3 звіту: вичерпаний `exec` сам повертає `lastIndex` у нуль.
+  // Рядок лишається як твердження про ІДЕМПОТЕНТНІСТЬ: два однакові виклики дають
+  // однакову відповідь, і саме воно почервоніє, якщо стан колись почне текти між
+  // викликами іншим шляхом.
+  expect(scanLine(line)).toHaveLength(3);
+
+  // Правило звіту тримається і тут: метадані, не збіг.
+  expect(JSON.stringify(found)).not.toContain(SYNTHETIC);
+});
+
 test('запуск крізь симлінк СПРАВДІ біжить — варта вхідної точки (R-22)', () => {
   // Фікстура НАВМИСНО брудна. Зламана варта дає нуль байтів виводу і EXIT=0 —
   // тобто на чистій фікстурі очікуваний код теж 0, і єдиним червоним лишилося б
@@ -251,6 +328,14 @@ test('ігнорований файл не сканується — периме
     // .env* у .gitignore фікстури: файл не передається, отже поза периметром.
     // Це записано в blindSpot рядка реєстру — межа, а не пропуск.
     expect(runCheck(CHECK, root).code).toBe(0);
+
+    // Самого коду 0 мало: його дає і зламаний периметр, який не прочитав нічого.
+    // Тому — скільки саме прочитано. Рівно чотири файли CLEAN_FILES, тобто
+    // `.env.local` до них НЕ потрапив: якби потрапив, було б п'ять і знахідка.
+    const { scanned, findings } = scanForSecrets(root);
+    expect(scanned).toBe(Object.keys(CLEAN_FILES).length);
+    expect(scanned).toBeGreaterThan(0);
+    expect(findings).toEqual([]);
   } finally {
     removeFixture(root);
   }
