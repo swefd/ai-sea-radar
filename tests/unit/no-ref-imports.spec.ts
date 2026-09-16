@@ -9,6 +9,9 @@ import {
   scanForRefImports,
   scanText,
 } from '../../scripts/verify/checks/no-ref-imports.mjs';
+// Перелік від git — друга з двох величин, які варта охоплення НЕ має плутати.
+// Тест нижче тримає їх поруч саме для того, щоб розходження було видно.
+import { listRepoFiles } from '../../scripts/verify/hash.mjs';
 import {
   checkPath,
   makeFixtureRepo,
@@ -761,6 +764,64 @@ test('запуск крізь симлінк СПРАВДІ біжить — в�
     expect(result.stdout).toContain('src/shared/lib/bad.ts:1:');
   } finally {
     removeFixture(linkDir);
+    removeFixture(root);
+  }
+});
+
+test('нуль перевірених файлів — це ПРОВАЛ, а не «порушень немає»', () => {
+  // Порожній репозиторій: `git ls-files` не віддає нічого, отже перевіряти нема що.
+  const root = makeFixtureRepo({});
+  try {
+    const result = runCheck(CHECK, root);
+
+    // Код 2, а не 0. Нуль перевірених файлів раніше друкував «порушень немає» і
+    // виходив 0 — тобто `run.mjs` малював PASSED для перевірки, яка не прочитала
+    // жодного файлу. Досяжно звичайним аргументом кореня: `no-ref-imports.mjs
+    // node_modules` (виміряно).
+    expect(result.code).toBe(2);
+    // 2, а не 1: обидва блокують однаково (classifyExit), але код відрізняє «не було
+    // чого перевіряти» від «знайдено порушення» для того, хто бачить лише код виходу.
+    expect(result.code).not.toBe(1);
+    expect(result.stderr).not.toBe('');
+    expect(result.stderr).toContain('нічого не оглянула');
+    // Причина мусить читатися як «не було що дивитися», а не як знахідка: статус
+    // FAILED тут той самий, що й при справжньому порушенні, і єдине, що їх
+    // розрізняє, — цей рядок.
+    expect(result.stderr).not.toContain('порушен');
+    expect(result.stdout).not.toContain('порушень немає');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('файли Є, але жоден не дійшов до перевірки — це той самий ПРОВАЛ', () => {
+  // Від попереднього тесту відрізняється рівно однією обставиною, і в ній весь сенс:
+  // перелік від git НЕ порожній. Варта мусить дивитися на «скільки перевірено», тобто
+  // на величину ПІСЛЯ обох відсівів, а не на «скільки віддав git».
+  //
+  // Без цього тесту варту можна було б переписати на `listRepoFiles(root).length === 0`
+  // — попередній тест лишився б зеленим (порожній репозиторій дає порожній перелік), а
+  // корінь, де файли є, але всі поза периметром сканування, знову став би PASSED. Це
+  // рівно той клас поломки, проти якого весь цей шар (R-123).
+  //
+  // Відсів тут найдешевший із двох — за розширенням: обидва файли в периметрі свіжості
+  // (`package.json` — поіменно, `src/**` — префіксом), але `.json` немає в
+  // SCAN_EXTENSIONS, тож до сканування не доходить жоден.
+  const root = makeFixtureRepo({
+    'package.json': '{"name":"t"}\n',
+    'src/shared/config/region.json': '{"zoom":10}\n',
+  });
+  try {
+    // Передумова, а не окрема вимога: величини справді РОЗХОДЯТЬСЯ. Якби фікстура
+    // перестала розходитися, тест червонів би тут — на причині, а не на наслідку.
+    expect(listRepoFiles(root)).toHaveLength(2);
+    expect(scanForRefImports(root).files).toEqual([]);
+
+    const result = runCheck(CHECK, root);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('нічого не оглянула');
+    expect(result.stdout).not.toContain('порушень немає');
+  } finally {
     removeFixture(root);
   }
 });
