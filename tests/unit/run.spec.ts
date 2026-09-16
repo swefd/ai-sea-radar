@@ -531,6 +531,98 @@ test('runAll: багатобайтовий вивід переживає меж�
   }
 });
 
+// 7a. Проба порожнечі — ДРІТ між розбором і статусом.
+//
+// Обидві половини перевіряють через `runAll`, а не через `parsePlaywrightTotal`:
+// парсер перевірено вище, рендерери — у report.spec.ts проти рукописних літералів,
+// а поводку між ними до цих двох тестів не торкався ніхто. Виміряно ревю: мутація
+// `finish('SKIPPED', …)` → `finish('PASSED', …)` лишала всі 214 тестів зеленими й
+// перекидала `verify:checkpoint` з EXIT=1 на EXIT=0 — тобто оголошувала передачу
+// повністю перевіреною за порожньої `tests/e2e/`, друкуючи статус, що суперечить
+// власному рядку причини.
+//
+// Маркерний файл — не прикраса: SKIPPED і UNRUNNABLE віддають `stdout: ''` із
+// дефолтів `finish`, тож за виводом «команда не бігла» від «команда бігла й мовчала»
+// не відрізнити. Слід на диску відрізняє.
+test('runAll: нуль знайдених тестів — SKIPPED причиною РЯДКА, а не PASSED', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-empty-'));
+  try {
+    const tier: Tier = 'fast';
+    // Playwright тут не біжить: обидві проби — це `printf`, а сам рядок синтетичний.
+    const checks: Check[] = [
+      {
+        id: 'нуль',
+        tier,
+        cmd: 'touch бігла-нуль',
+        needs: [], after: [],
+        emptyProbe: { cmd: 'printf "Total: 0 tests in 0 files"', reason: 'нуль тестів у фікстурі' },
+        proves: '.', blindSpot: '.',
+      },
+      // Друга половина, без якої тест стереже наполовину: проба, що каже «тести є»,
+      // мусить пропустити перевірку ДАЛІ. Реалізація, яка робить SKIPPED кожному
+      // рядку з `emptyProbe`, задовольнила б перший рядок і не задовольнила цей.
+      {
+        id: 'двійка',
+        tier,
+        cmd: 'touch бігла-двійка',
+        needs: [], after: [],
+        emptyProbe: { cmd: 'printf "Total: 2 tests in 1 file"', reason: 'сюди не дійде' },
+        proves: '.', blindSpot: '.',
+      },
+    ];
+
+    const results: CheckResult[] = await runAll({
+      checks, root, tier, noSkip: false, only: [], timeoutMs: null,
+    });
+
+    expect(results.map((r) => [r.id, r.status])).toEqual([
+      ['нуль', 'SKIPPED'],
+      ['двійка', 'PASSED'],
+    ]);
+    // Причина приходить із ДАНИХ рядка, а не з константи раннера: рядок реєстру —
+    // єдине місце, де написано «0 тестів написано», і підставний текст це доводить.
+    expect(results.find((r) => r.id === 'нуль')?.reason).toBe('нуль тестів у фікстурі');
+    // Сама перевірка НЕ бігла: пропуск, після якого команда все одно виконалась, —
+    // це PASSED, перефарбований у SKIPPED, і про код він так само нічого не знає.
+    expect(existsSync(path.join(root, 'бігла-нуль'))).toBe(false);
+    expect(existsSync(path.join(root, 'бігла-двійка'))).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runAll: нерозбірна проба переліку — UNRUNNABLE, а не тихий PASSED', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'sea-radar-unparsable-'));
+  try {
+    const tier: Tier = 'fast';
+    const checks: Check[] = [
+      {
+        id: 'сміття',
+        tier,
+        cmd: 'touch бігла-сміття',
+        needs: [], after: [],
+        emptyProbe: { cmd: 'printf "щось геть інше"', reason: 'сюди не дійде' },
+        proves: '.', blindSpot: '.',
+      },
+    ];
+
+    const results: CheckResult[] = await runAll({
+      checks, root, tier, noSkip: false, only: [], timeoutMs: null,
+    });
+
+    expect(results.map((r) => [r.id, r.status])).toEqual([['сміття', 'UNRUNNABLE']]);
+    expect(results[0].reason).toContain('нерозбірний');
+    // Причина рядка тут була б брехнею про код: зламана проба — не «тестів нема».
+    expect(results[0].reason).not.toBe('сюди не дійде');
+    // Вивід проби доїжджає у звіт: без нього нерозбірність нічим розбирати.
+    expect(results[0].stdout).toContain('щось геть інше');
+    // І команда перевірки не бігла — інакше нерозбірна проба нічого не коштувала б.
+    expect(existsSync(path.join(root, 'бігла-сміття'))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // 8. Цілісність реєстру — стереже дані, не логіку.
 test('реєстр: id унікальні, tier валідний, посилання розвʼязні', () => {
   const ids = CHECKS.map((c) => c.id);

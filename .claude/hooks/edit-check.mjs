@@ -345,9 +345,15 @@ async function main() {
   // але він НЕ мовчазний: підміна дерева, про яку не сказали, — це звіт про чуже дерево.
   let root = typeof input.cwd === 'string' && input.cwd !== '' ? input.cwd : '';
   let rootFallbackNote = '';
+  // Звідки взято дерево — частина діагностики, а не дрібниця: рання відмова нижче
+  // друкувала «дерево (cwd)» і тоді, коли `cwd` подія НЕ несла, тобто називала
+  // невинне джерело. Відмова лишалася гучною, брехала лише підказка — а читають
+  // саме її.
+  let rootSource = 'cwd';
   if (root === '') {
     const fromEnv = process.env.CLAUDE_PROJECT_DIR;
     root = fromEnv ?? process.cwd();
+    rootSource = fromEnv ? '$CLAUDE_PROJECT_DIR' : 'process.cwd()';
     rootFallbackNote = 'У вхідному JSON немає поля cwd. Дерево взяте з '
       + `${fromEnv ? '$CLAUDE_PROJECT_DIR' : 'process.cwd()'}: ${root}. `
       + 'У worktree це може бути НЕ те дерево, яке ви редагуєте.';
@@ -371,7 +377,7 @@ async function main() {
       emit(notRunNotice(
         'edit-check',
         'файл коду лежить ПОЗА деревом, яке назвала подія',
-        `дерево (cwd): ${root}\nфайл: ${filePath}`,
+        `дерево (${rootSource}): ${root}\nфайл: ${filePath}`,
       ));
     }
     process.exit(0);

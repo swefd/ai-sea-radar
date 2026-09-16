@@ -447,9 +447,33 @@ test('файл коду під ЧУЖИМ коренем — гучно, а не
     expect(context).toContain('ПОЗА деревом');
     // Назване обидва: і дерево події, і файл — інакше причину довелося б угадувати.
     expect(context).toContain(wrongTree);
+    // Тут `cwd` у події СПРАВДІ був, тож мітка джерела правдива.
+    expect(context).toContain('дерево (cwd)');
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(wrongTree, { recursive: true, force: true });
+  }
+});
+
+test('рання відмова називає СПРАВЖНЄ джерело дерева, а не завжди «cwd»', () => {
+  // Друга половина тесту вище. Подія без поля `cwd`: дерево взято із запасного
+  // джерела, а підказка друкувала «дерево (cwd)» — називала джерело, якого в
+  // події не було. Відмова гучна в обох випадках, бреше лише діагностика — і
+  // читають саме її. Цей шлях виходить ДО `formatLead`, тож примітка про запасне
+  // дерево сюди не доїжджає: мітка в дужках лишається єдиним слідом.
+  const fallbackTree = mkdtempSync(path.join(tmpdir(), 'sea-radar-editcheck-fallback-'));
+  try {
+    const run = runHook(
+      payload({ tool_input: { file_path: '/tmp/чуже-дерево/src/a.ts' } }),
+      { env: { CLAUDE_PROJECT_DIR: fallbackTree } },
+    );
+    expect(run.status).toBe(0);
+    const context = additionalContext(run.stdout);
+    expect(context).toContain('ПОЗА деревом');
+    expect(context).toContain('дерево ($CLAUDE_PROJECT_DIR)');
+    expect(context).not.toContain('дерево (cwd)');
+  } finally {
+    rmSync(fallbackTree, { recursive: true, force: true });
   }
 });
 
