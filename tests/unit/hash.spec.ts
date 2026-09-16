@@ -8,6 +8,7 @@ import {
   SOURCE_PREFIXES,
   SOURCE_FILES,
   isSourcePath,
+  listRepoFiles,
   listSourceFiles,
   sourceHash,
 } from '../../scripts/verify/hash.mjs';
@@ -97,6 +98,22 @@ test('listSourceFiles бере джерельні файли, ігнорує git
       'package.json',
       'src/_pages/home/ui/home-page.tsx',
     ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('listRepoFiles віддає весь периметр передачі, а не лише джерела', () => {
+  const root = makeRepo();
+  try {
+    const all = listRepoFiles(root);
+    // Ширше за listSourceFiles: README.md — переданий файл, але не джерело.
+    expect(all).toContain('README.md');
+    expect(all).toContain('app/page.tsx');
+    // .gitignore поважається: ігноровані файли не передаються й тут не з'являються.
+    expect(all).not.toContain('secret.txt');
+    // listSourceFiles — це фільтр над тим самим переліком, не другий запит до git.
+    expect(listSourceFiles(root)).toEqual(all.filter(isSourcePath));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

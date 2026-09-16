@@ -4,6 +4,7 @@
 export declare const SOURCE_PREFIXES: readonly string[];
 export declare const SOURCE_FILES: readonly string[];
 export declare function isSourcePath(relPath: string): boolean;
+export declare function listRepoFiles(root: string): string[];
 export declare function listSourceFiles(root: string): string[];
 export declare function sourceHash(root: string): {
   hash: string;

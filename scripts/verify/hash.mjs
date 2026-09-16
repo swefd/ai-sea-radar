@@ -47,7 +47,13 @@ export function isSourcePath(relPath) {
     || SOURCE_FILES.includes(relPath);
 }
 
-export function listSourceFiles(root) {
+/**
+ * Усі файли, що входять у передачу: відстежені (-c) плюс невідстежені, але не
+ * ігноровані (-o --exclude-standard). Саме це отримає клієнт із `git clone`, і саме
+ * це сканують перевірки шару. Запит до git живе тут в однині: перевірка, яка питала б
+ * git самостійно, могла б розійтися з ключем свіжості в питанні «які файли існують».
+ */
+export function listRepoFiles(root) {
   // -c: відстежувані, -o: невідстежувані, --exclude-standard: поважати .gitignore.
   // -z дає рівно одне: шляхи з пробілами, лапками чи переводами рядка
   // переживають розбиття цілими — без нього git їх лапкує й екранує, і
@@ -60,15 +66,14 @@ export function listSourceFiles(root) {
     { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] },
   );
 
-  const entries = raw.split('\0');
-
   // Під час конфлікту `-c` віддає по рядку на кожну стадію того самого шляху,
-  // тож без Set файл хешувався б кілька разів, а fileCount роздувався б.
-  const selected = [
-    ...new Set(
-      entries.filter((relPath) => relPath !== '' && isSourcePath(relPath)),
-    ),
-  ].sort();
+  // тож без Set файл хешувався б кілька разів, fileCount роздувався б, а
+  // no-ref-imports читав би той самий файл двічі й рахував порушення подвійно.
+  return [...new Set(raw.split('\0').filter((relPath) => relPath !== ''))].sort();
+}
+
+export function listSourceFiles(root) {
+  const selected = listRepoFiles(root).filter(isSourcePath);
 
   // Шлях із невалідним UTF-8 декодується в U+FFFD, далі readFileSync дає
   // ENOENT, і файл тихо стає `<missing>` — тобто хеш мовчки бреше. У цьому
