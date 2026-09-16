@@ -50,14 +50,36 @@ function commandOf(event: 'PostToolUse' | 'Stop'): string {
   return entry?.hooks[0].command ?? '';
 }
 
+/**
+ * Плагіни, які лежали у файлі до вмикання хуків. Перелічені поіменно, бо перевірка
+ * самого лише ІМЕНІ ключа ловить тільки грубу форму пастки — заміну файлу цілим
+ * блоком JSON. Часткова втрата (`enabledPlugins: {}` чи мінус один рядок) проходила
+ * б зеленою, а це рівно той різновид «зеленого, що нічого не стереже», проти якого
+ * весь цей шар. Перевірка — НАДмножинна: шостий плагін, увімкнений пізніше, не
+ * робить тест червоним, зникнення будь-якого з п'яти — робить.
+ */
+const PLUGINS_BEFORE_WIRING = [
+  'context7@claude-plugins-official',
+  'skill-creator@claude-plugins-official',
+  'superpowers@claude-plugins-official',
+  'typescript-lsp@claude-plugins-official',
+  'frontend-design@claude-plugins-official',
+];
+
 test('вмикання не загубило наявний enabledPlugins', () => {
   expect(settings()).toHaveProperty('enabledPlugins');
+  expect(Object.keys(settings().enabledPlugins ?? {}))
+    .toEqual(expect.arrayContaining(PLUGINS_BEFORE_WIRING));
 });
 
 test('PostToolUse увімкнено на Edit|Write із явним таймаутом 120', () => {
   const post = settings().hooks?.PostToolUse?.[0];
   expect(post).toBeDefined();
-  expect(post?.matcher).toBe('Edit|Write'); // список точних збігів, регістрозалежний
+  // `Edit|Write` містить лише літери й `|`, тож довідник оцінює його як «exact
+  // string, or list of exact strings», а не як регулярний вираз; будь-який інший
+  // символ перевів би матчер на гілку «JavaScript regular expression, unanchored»,
+  // де `Edit.*` збігається ще й із `NotebookEdit`. Регістрозалежні обидві гілки.
+  expect(post?.matcher).toBe('Edit|Write');
   expect(post?.hooks[0].type).toBe('command');
   expect(post?.hooks[0].command).toContain('edit-check.mjs');
   expect(post?.hooks[0].command).toContain('node.sh'); // ніколи не голий node
@@ -83,6 +105,19 @@ test('Stop увімкнено без матчера, із таймаутом 300
  * доходить до `sh` літералом.
  */
 for (const event of ['PostToolUse', 'Stop'] as const) {
+  /**
+   * Друга половина вимоги §6.4, і саме та, якої розкриття НЕ доводить: абсолютним
+   * шлях був би й зашитий `/Users/<хтось>/…`, і всі тести нижче лишилися б зеленими
+   * на цій машині. Ціна конкретна — машинозалежний домашній шлях у файлі, який
+   * клієнт відкриває на прийманні, і хук, що не запуститься в жодного іншого.
+   * Тому адреса скрипта перевіряється в НЕРОЗКРИТОМУ рядку.
+   */
+  test(`команда ${event} адресує скрипт через $CLAUDE_PROJECT_DIR, а не машинним шляхом`, () => {
+    const words = commandOf(event).split(' ');
+    expect(words).toHaveLength(2);
+    for (const word of words) expect(word).toMatch(/^"\$CLAUDE_PROJECT_DIR"\//);
+  });
+
   test(`команда ${event} розкривається в абсолютні шляхи до наявних файлів`, () => {
     const argv = expandArgv(commandOf(event), ROOT);
     const script = event === 'Stop' ? 'stop-gate.mjs' : 'edit-check.mjs';
