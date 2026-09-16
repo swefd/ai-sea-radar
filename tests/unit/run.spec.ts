@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
 
+import { isEntryPoint } from '../../scripts/verify/entry-point.mjs';
 import {
   type Check,
   type Precondition,
@@ -29,7 +30,8 @@ import {
   selectChecks,
 } from '../../scripts/verify/run.mjs';
 
-// Кожне ім'я з обох `.d.mts` імпортоване тут і вжите нижче. Це не охайність:
+// Кожне ім'я з усіх трьох `.d.mts` (registry, run, entry-point) імпортоване тут і
+// вжите нижче. Це не охайність:
 // за `allowJs: false` TypeScript читає декларацію й НІКОЛИ не читає `.mjs`,
 // тож `check-types` однаково радо прийме декларацію, якій у рантаймі не
 // відповідає нічого. Єдина перевірка, що існує, — рантайм-імпорт із тесту
@@ -365,12 +367,13 @@ test('runAll: несправна передумова коштує один ря
     // статус їм намалювала б і сітка навколо проби, причина — ні (R-71).
     expect(results.find((r) => r.id === 'undef')?.reason).toContain('непридатна передумова');
     expect(results.find((r) => r.id === 'half')?.reason).toContain('непридатна передумова');
-    // Оголошення каже `reason: string` (run.d.mts:18). Єдине, що стоїть між
+    // Оголошення каже `reason: string` (поле `reason` у `CheckResult`, run.d.mts).
+    // Єдине, що стоїть між
     // оголошенням і рантаймом, — рантайм-імпорт із цієї спеки (R-48), тож тип
     // треба міряти, а не вірити йому. Порожній рядок не рахується: у JSON він
     // лишає ключ, у тексті друкує тишу — те саме мовчання, що й `undefined`.
     // Непорожності вимагаємо від рядків, які НЕ бігли: у PASSED пояснювати
-    // нічого, і `classifyExit` віддає там `reason: ''` навмисно (run.mjs:108).
+    // нічого, і `classifyExit` віддає там `reason: ''` навмисно — гілка PASSED.
     for (const r of results) {
       expect(typeof r.reason).toBe('string');
       if (r.status !== 'PASSED') expect(r.reason.trim()).not.toBe('');
@@ -421,8 +424,8 @@ test('runAll: проба, яка кидає, коштує один рядок, �
     expect(results.find((r) => r.id === 'boom')?.reason).toContain('падуча');
     // Лапки — теж предмет, і не лише у вартового: id із самих пробілів або
     // порожній зник би з тексту сітки, і звіт назвав би передумову, не назвавши
-    // яку. Без цього твердження реверт `JSON.stringify` на run.mjs:268
-    // лишається для набору невидимим (R-50).
+    // яку. Без цього твердження реверт `JSON.stringify` у рядку «передумова … —»
+    // сітки навколо проб у `runAll` лишається для набору невидимим (R-50).
     expect(results.find((r) => r.id === 'boom')?.reason).toContain('"падуча"');
     // `new Error('')` має `message`, і він порожній: `??` його не відкине, і
     // причина звелася б до префікса «проба впала: » — рядка, який каже «не зміг»
@@ -700,5 +703,49 @@ test('запуск крізь симлінк СПРАВДІ біжить — в�
   } finally {
     rmSync(linkDir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 9. Сама спільна варта, а не її застосування. Рантайм-імпорт `isEntryPoint` із цієї
+// спеки — ЄДИНЕ, що робить `entry-point.d.mts` предметом типчека (R-48): за
+// `allowJs: false` TypeScript читає декларацію й ніколи не читає `.mjs`.
+// Перейменування рантайм-експорту ловиться й без цього рядка, гучно — сюїта просто не
+// збирається (виміряно), — а от дрейф ТИПУ не ловить більше ніщо: якби функція почала
+// брати `URL` або віддавати не булеве, декларація брехала б мовчки.
+//
+// Тест живе тут, а не в окремій спеці: `entry-point.mjs` існує заради цього файлу в
+// тому числі, і саме тут уже записано, чим і чому перевіряються `.d.mts`.
+test('isEntryPoint: порівнює РЕАЛЬНІ шляхи, а не рядки, і не падає на неіснуючому', () => {
+  const real = path.resolve(process.cwd(), 'scripts/verify/run.mjs');
+  const other = path.resolve(process.cwd(), 'scripts/verify/hash.mjs');
+  const dir = mkdtempSync(path.join(tmpdir(), 'sea-radar-entry-'));
+  const link = path.join(dir, 'run-link.mjs');
+  // `process.argv[1]` — єдиний вхід функції, якого не видно в її підписі, тож тест
+  // ним і керує. Відновлюється у finally: решта спек читає його через підпроцеси.
+  const savedArgv = process.argv[1];
+  try {
+    expect(existsSync(real)).toBe(true);
+    expect(existsSync(other)).toBe(true);
+    symlinkSync(real, link);
+    // Несучий рядок: рядки мусять РІЗНИТИСЯ, інакше перший випадок нижче
+    // вироджується у порівняння шляху з самим собою.
+    expect(link).not.toBe(real);
+
+    // Запуск крізь симлінк: рядки різні, файл один і той самий — це ми.
+    // Наївне порівняння рядків дало б тут false, і `main()` не бігло б узагалі.
+    process.argv[1] = link;
+    expect(isEntryPoint(real)).toBe(true);
+
+    // Сусідній модуль того ж шару — не ми, хоч обидва шляхи реальні.
+    process.argv[1] = real;
+    expect(isEntryPoint(other)).toBe(false);
+
+    // Шляху немає: `realpathSync` кидає, а варта мусить відповісти false, а не
+    // повалити разом із собою процес, який її спитав.
+    process.argv[1] = path.join(dir, 'зниклий.mjs');
+    expect(isEntryPoint(real)).toBe(false);
+  } finally {
+    process.argv[1] = savedArgv;
+    rmSync(dir, { recursive: true, force: true });
   }
 });

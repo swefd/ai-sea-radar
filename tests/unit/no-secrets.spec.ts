@@ -361,8 +361,9 @@ test('запуск крізь симлінк СПРАВДІ біжить — в�
     symlinkSync(real, link);
     // Несучий рядок: якби шлях запуску збігався з реальним, тест міряв би
     // звичайний запуск і був би зелений з будь-якою вартою. На macOS tmpdir іще
-    // й лежить за симлінком (/var → /private/var) — про це саме кажуть
-    // run.spec.ts:206 і report.spec.ts:189, — але тут різницю створює сам лінк.
+    // й лежить за симлінком (/var → /private/var) — про це саме кажуть тест
+    // «resolveRoot: корінь git-дерева…» в run.spec.ts і `seedCachedRoot` у
+    // report.spec.ts, — але тут різницю створює сам лінк.
     expect(link).not.toBe(real);
 
     const result = spawnSync(process.execPath, [link, root], { encoding: 'utf8' });

@@ -193,7 +193,7 @@ function seedCachedRoot(): { root: string; sentinel: string } {
   // НЕСУЧИЙ рядок: sourceHash ходить у git через execFileSync, тож у
   // не-репозиторії він не дає порожнього результату, а просто кидає.
   execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q'], { cwd: root });
-  // Периметр хешу задає isSourcePath (scripts/verify/hash.mjs:45) — SOURCE_PREFIXES
+  // Периметр хешу задає `isSourcePath` зі `scripts/verify/hash.mjs` — SOURCE_PREFIXES
   // плюс іменний SOURCE_FILES, — а не .gitignore. `.verify/…` не підпадає під
   // жоден із них, тож файл кеша у власний хеш не потрапляє незалежно від цього
   // рядка. Рядок лишається як страховка на випадок, якщо SOURCE_PREFIXES колись
