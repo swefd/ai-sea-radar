@@ -5,6 +5,11 @@ import path from 'node:path';
 
 import { sourceHash } from './hash.mjs';
 import { CHECKS, DEFAULT_TIMEOUT_MS, PRECONDITIONS } from './registry.mjs';
+// Напрямок імпорту односторонній: run.mjs → report.mjs, ніколи навпаки. Тому
+// `isBlocking` лишається тут, а в звіт іде готове поле `blocking`: імпорт
+// `isBlocking` у report.mjs замкнув би цикл між двома файлами, які задача 10
+// вантажить обидва.
+import { cacheKey, formatTable, readFreshPass, toReport, toStdoutJson, wantsColor, writeReport } from './report.mjs';
 
 /** Спека §5, дослівно. */
 export function isBlocking(status, noSkip) {
@@ -292,6 +297,11 @@ export async function runAll({ checks = CHECKS, preconditions = PRECONDITIONS, r
   return results;
 }
 
+// Названі межі свіжості (R-49, R-57). Друкуються саме там, де зелене
+// ВІДТВОРЮЄТЬСЯ, а не обчислюється: мовчазний кеш — це PASSED про дерево,
+// якого щойно ніхто не перевіряв, і його межі мусять стояти поруч із ним.
+const FRESHNESS_LIMITS = 'межі свіжості: .claude/settings.local.json поза git, тож локальне ввімкнення чи вимкнення хука кеш не скидає (R-49); назва файлу з U+FFFD зупиняє хешування цілком — гучно й зі шляхом (R-57)';
+
 // CLI
 //
 // Тіло — у звичайній async-функції, а не в top-level await, і це не стиль.
@@ -303,33 +313,42 @@ export async function runAll({ checks = CHECKS, preconditions = PRECONDITIONS, r
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const root = opts.root ? path.resolve(opts.root) : resolveRoot(process.cwd());
-  // ...opts ПЕРЕД root, не після. У opts є власний root (за замовчуванням null),
-  // і зворотний порядок затер би щойно обчислений корінь нулем — probe(null)
-  // упав би на path.join(null, 'node_modules').
-  const results = await runAll({ ...opts, root });
-  const blocking = results.some((r) => isBlocking(r.status, opts.noSkip));
-  // Тимчасовий текстовий вивід. Таблиця й кеш свіжості приходять у задачі 4;
-  // форма JSON — ні, вона фіксується тут і більше не змінюється.
+  const startedAt = Date.now();
+
+  const { hash, fileCount } = sourceHash(root);
+  const key = cacheKey({ hash, tier: opts.tier, noSkip: opts.noSkip, only: opts.only });
+
+  let report = opts.reuseIfFresh ? readFreshPass(root, key) : null;
+  if (report) {
+    report = { ...report, reused: true };
+  } else {
+    // ...opts ПЕРЕД root в обох викликах: в opts є власний root (за замовчуванням
+    // null), і зворотний порядок тихо повернув би корінь у null.
+    const results = await runAll({ ...opts, root });
+    // Вердикт обчислює раннер — тут і лише тут. report.mjs його не виводить.
+    const blocking = results.some((r) => isBlocking(r.status, opts.noSkip));
+    report = toReport({ ...opts, root, hash, fileCount, reused: false, blocking, results, startedAt, durationMs: Date.now() - startedAt });
+    // Пишемо ЗАВЖДИ, навіть коли блокує: Stop-гейт задачі 10 читає саме цей файл,
+    // і найцікавіший для нього випадок — червоний.
+    writeReport(root, report);
+  }
+
   if (opts.json) {
-    // R-16, дослівно. Рівно ці поля й у цьому порядку; споживачі — звіт задачі 4
-    // і Stop-гейт задачі 10 — цитують цю форму у своїх Interfaces. Повні stdout,
-    // stderr, exitCode лишаються всередині `results` раннера, але у JSON не
-    // потрапляють: гейт читає їх із `.verify/last-run.json` (задача 4).
-    const report = {
-      tier: opts.tier,
-      root,
-      noSkip: opts.noSkip,
-      sourceHash: sourceHash(root).hash,
-      results: results.map((r) => ({
-        id: r.id, status: r.status, reason: r.reason, durationMs: r.durationMs,
-      })),
-    };
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  } else for (const r of results) process.stdout.write(`${r.status.padEnd(11)} ${r.id}${r.reason ? `  — ${r.reason}` : ''}\n`);
-  // exitCode, а не process.exit(): запис у трубу асинхронний, і process.exit
-  // обрізав би хвіст таблиці рівно тоді, коли вивід кудись перенаправлено
-  // (крок 12 задачі 4 саме це й робить).
-  process.exitCode = blocking ? 1 : 0;
+    // Форма stdout — контракт R-16, і збирає її експортована toStdoutJson,
+    // а не літерал тут: CLI не запускає жоден тест набору, тож зібраний тут
+    // конверт міг би втратити поле, лишивши весь набір зеленим (R-64).
+    process.stdout.write(`${JSON.stringify(toStdoutJson(report), null, 2)}\n`);
+  } else {
+    process.stdout.write(formatTable(report.results, { color: wantsColor(process.stdout) }));
+    // Відтворений прогін КАЖЕ, що він відтворений, і називає хеш. Межі свіжості
+    // йдуть перед цим рядком, щоб останнім лишалося головне — чи бігло щось узагалі.
+    if (report.reused) process.stdout.write(`${FRESHNESS_LIMITS}\n`);
+    const source = report.reused ? `відтворено з .verify/last-run.json (hash ${hash.slice(0, 12)}, ${fileCount} файлів)` : `hash ${hash.slice(0, 12)}, ${fileCount} файлів`;
+    process.stdout.write(`${source}\n`);
+  }
+  // exitCode, а не process.exit(): інакше крок 12 (`npm run verify | cat -v`)
+  // може загубити хвіст таблиці — запис у трубу асинхронний.
+  process.exitCode = report.blocking ? 1 : 0;
 }
 
 // R-22: `import.meta.filename === process.argv[1]` — не конкатенація `file://…`,
