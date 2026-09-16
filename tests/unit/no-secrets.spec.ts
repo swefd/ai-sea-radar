@@ -1,9 +1,12 @@
-import { rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
 import { scanForSecrets } from '../../scripts/verify/checks/no-secrets.mjs';
 import {
+  checkPath,
   makeFixtureRepo,
   removeFixture,
   runCheck,
@@ -199,6 +202,44 @@ test('бінарний файл пропускається — і пропуск
     expect(result.stdout).toContain('пропущено бінарних — 1');
     expect(result.code).toBe(0);
   } finally {
+    removeFixture(root);
+  }
+});
+
+test('запуск крізь симлінк СПРАВДІ біжить — варта вхідної точки (R-22)', () => {
+  // Фікстура НАВМИСНО брудна. Зламана варта дає нуль байтів виводу і EXIT=0 —
+  // тобто на чистій фікстурі очікуваний код теж 0, і єдиним червоним лишилося б
+  // «вивід порожній». З підкинутим ключем правильний код — 1, тож зламана варта
+  // валить і код, і вивід, і рядок знахідки. Тест, який ледве червоніє, тут
+  // вартий менше за ніщо: саме мовчазне PASSED і є та поломка, яку він стереже.
+  const root = makeFixtureRepo({
+    ...CLEAN_FILES,
+    'src/shared/config/keys.ts': `export const key = '${SYNTHETIC}';\n`,
+  });
+  const linkDir = mkdtempSync(path.join(tmpdir(), 'sea-radar-check-link-'));
+  const link = path.join(linkDir, 'no-secrets-link.mjs');
+  try {
+    const real = checkPath(CHECK);
+    symlinkSync(real, link);
+    // Несучий рядок: якби шлях запуску збігався з реальним, тест міряв би
+    // звичайний запуск і був би зелений з будь-якою вартою. На macOS tmpdir іще
+    // й лежить за симлінком (/var → /private/var) — про це саме кажуть
+    // run.spec.ts:206 і report.spec.ts:189, — але тут різницю створює сам лінк.
+    expect(link).not.toBe(real);
+
+    const result = spawnSync(process.execPath, [link, root], { encoding: 'utf8' });
+
+    // Node резолвить URL модуля крізь симлінк, а process.argv[1] — ні. Пряме
+    // порівняння тих двох не кликало б main() взагалі: порожній вивід, EXIT=0,
+    // і `run.mjs` зробив би з нього PASSED, не просканувавши жодного файлу.
+    expect(result.stdout).not.toBe('');
+    expect(result.status).toBe(1);
+    // І біг саме по фікстурі, а не просто щось надрукував.
+    expect(result.stdout).toContain('src/shared/config/keys.ts:1: aws-access-key-id');
+    // Правило звіту діє й тут: знайдене не друкується.
+    expect(result.stdout).not.toContain(SYNTHETIC);
+  } finally {
+    removeFixture(linkDir);
     removeFixture(root);
   }
 });
