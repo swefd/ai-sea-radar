@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -178,6 +178,11 @@ test('toStdoutJson віддає рівно шість ключів R-16+R-73 і 
  * Тимчасовий корінь із готовим кешем, у якому лежить рядок-сентинел: id, якого
  * в справжньому реєстрі немає. Якщо CLI віддасть саме його — кеш справді
  * відтворено, і жодна справжня перевірка не бігла.
+ *
+ * МЕЖА обох тестів нижче: вони доводять ПРОВОДКУ — «ключ збігся, отже CLI читає
+ * кеш і не запускає жодної справжньої перевірки», — а не контентну адресацію.
+ * Що хеш справді входить у ключ, стереже `readFreshPass` вище (рядок із `h2`);
+ * що хеш розрізняє дерева — вісім тестів tests/unit/hash.spec.ts.
  */
 function seedCachedRoot(): { root: string; sentinel: string } {
   const sentinel = 'сентинел-кеш';
@@ -185,12 +190,21 @@ function seedCachedRoot(): { root: string; sentinel: string } {
   // а CLI кличе path.resolve, який симлінка не розкриває. Без цього корінь
   // фікстури і корінь CLI були б різними рядками.
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'verify-cli-')));
-  // sourceHash ходить у git через execFileSync і в не-репозиторії просто кине.
+  // НЕСУЧИЙ рядок: sourceHash ходить у git через execFileSync, тож у
+  // не-репозиторії він не дає порожнього результату, а просто кидає.
   execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q'], { cwd: root });
-  // Не декорація: `git ls-files -c -o --exclude-standard` перелічує й
-  // НЕвідстежуване, тож без цього рядка сам файл кеша ввійшов би в хеш, і ключ,
-  // порахований до запису, розійшовся б із ключем, який CLI рахує після.
+  // Периметр хешу задає isSourcePath (scripts/verify/hash.mjs:45) — SOURCE_PREFIXES
+  // плюс іменний SOURCE_FILES, — а не .gitignore. `.verify/…` не підпадає під
+  // жоден із них, тож файл кеша у власний хеш не потрапляє незалежно від цього
+  // рядка. Рядок лишається як страховка на випадок, якщо SOURCE_PREFIXES колись
+  // розшириться, і щоб фікстура була схожа на справжній репозиторій; сьогодні
+  // він нічого не запобігає.
   writeFileSync(path.join(root, '.gitignore'), '/.verify/\n');
+  // А ось це — всередині периметра ('tests/'), і саме завдяки йому sourceHash
+  // рахує хеш від ВМІСТУ, а не віддає sha256 порожнечі, однакову для будь-якого
+  // порожнього дерева. Покриття від цього не змінюється — лише репрезентативність.
+  mkdirSync(path.join(root, 'tests'), { recursive: true });
+  writeFileSync(path.join(root, 'tests/fixture.txt'), 'фікстура хешу\n');
 
   const { hash } = sourceHash(root);
   const opts = { hash, tier: 'fast' as const, noSkip: false, only: [] as string[] };
