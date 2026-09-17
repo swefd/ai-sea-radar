@@ -46,3 +46,15 @@ next-env.d.ts
 # Claude Code: scratch worktrees, and local settings that hold a live token
 /.claude/worktrees/
 /.claude/settings.local.json
+
+# робочі нотатки розробки (брифи, ревю, звіти) — не частина передачі.
+# Тримати їх осторонь мусить сам репозиторій: `.git/info/exclude` машинно-локальний
+# і клонування не переживає, тож без цього рядка `git add -A` на іншій машині забрав
+# би всю теку в передачу — і в периметр `no-secrets` разом із нею
+/.superpowers/
+
+# звіти й лічильники шару перевірки
+/.verify/
+
+# трейси невдалих прогонів: R-41 зробив trace 'retain-on-failure'
+/test-results/
