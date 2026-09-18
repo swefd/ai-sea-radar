@@ -4,14 +4,21 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
 /**
- * Розділ «Перевірка» в `CLAUDE.md` повторює значення, які пінить код: точні версії трьох
+ * Проза цього репозиторію повторює п'ять значень, які пінить код: точні версії трьох
  * інструментів перевірки (`package.json`) і два таймаути хуків (`.claude/settings.json`).
  * Повтор корисний — читач бачить число там, де читає обґрунтування, — але без сторожа він
  * дрейфує МОВЧКИ: підняли версію, перевірки почервоніли гучно, їх полагодили, а проза
  * лишилася казати старе число. Це той самий дрейф, від якого стереже сторож
  * `verify-layer.md` ↔ `registry.mjs`, лише інша пара.
  *
- * Межа так само вузька: ЛИШЕ ці п'ять значень і лише в `CLAUDE.md`. Це не загальний
+ * ДВА РІЗНІ ФАЙЛИ, і це не недогляд. Розділ «Перевірка» в `CLAUDE.md` стиснуто до
+ * вказівника: механіка шару переїхала в скіл `.claude/skills/verify/SKILL.md`, а разом із
+ * текстом переїхала й та половина сторожа, що його стереже. У `CLAUDE.md` лишилася
+ * таблиця залежностей — бо це правило про те, що вільно встановлювати, а не про те, як
+ * перевіряти. Сторож іде за текстом; прецедент — переїзд `verify-layer-doc.spec.ts`
+ * разом із таблицею `proves`/`blindSpot`.
+ *
+ * Межа так само вузька: ЛИШЕ ці п'ять значень і лише в цих двох файлах. Це не загальний
  * docs-drift і не перевірка решти прози.
  *
  * Чого тут НЕМАЄ і чому: дефолт таймаута command-хука (600 с) не пінить жоден файл цього
@@ -26,6 +33,9 @@ interface Manifest {
 interface HookCommand { timeout?: number }
 interface HookEntry { hooks: HookCommand[] }
 interface Settings { hooks?: Record<string, HookEntry[] | undefined> }
+
+/** Файл, що володіє механікою шару — і, отже, таймаутами хуків. */
+const SKILL = path.join('.claude', 'skills', 'verify', 'SKILL.md');
 
 /**
  * Корінь — із `config.configFile`, як і в сусіднього сторожа: `process.cwd()` залежить
@@ -69,9 +79,9 @@ test('версії інструментів перевірки в CLAUDE.md зб
   }
 });
 
-test('таймаути хуків у CLAUDE.md збігаються з .claude/settings.json', () => {
+test('таймаути хуків у скілі verify збігаються з .claude/settings.json', () => {
   const settings = JSON.parse(read('.claude/settings.json')) as Settings;
-  const claudeMd = read('CLAUDE.md');
+  const skill = read(SKILL);
 
   for (const event of ['PostToolUse', 'Stop'] as const) {
     const pinned = settings.hooks?.[event]?.[0]?.hooks[0]?.timeout;
@@ -80,10 +90,25 @@ test('таймаути хуків у CLAUDE.md збігаються з .claude/s
     // Число ВИТЯГУЄТЬСЯ з прози й порівнюється, а не шукається готовим: пошук
     // підрядка «`Stop` 300 с» лишався б зеленим і тоді, коли поряд стоїть друге,
     // суперечливе число.
-    const found = [...claudeMd.matchAll(new RegExp(`\x60${event}\x60 (\\d+) с`, 'g'))]
+    const found = [...skill.matchAll(new RegExp(`\x60${event}\x60 (\\d+) с`, 'g'))]
       .map((match) => Number(match[1]));
-    expect(found, `${event}: у CLAUDE.md очікується рівно одна згадка таймаута`)
+    expect(found, `${event}: у ${SKILL} очікується рівно одна згадка таймаута`)
       .toHaveLength(1);
-    expect(found[0], `таймаут ${event} у CLAUDE.md розійшовся з settings.json`).toBe(pinned);
+    expect(found[0], `таймаут ${event} у ${SKILL} розійшовся з settings.json`).toBe(pinned);
+  }
+});
+
+/**
+ * Переїзд мусить бути ПОВНИМ. Без цього твердження забутий у `CLAUDE.md` абзац із
+ * таймаутами жив би другою редакцією: сторож вище дивиться лише в скіл, тож старе число
+ * в `CLAUDE.md` лишалося б зеленим — рівно той мовчазний дрейф, проти якого весь файл.
+ */
+test('таймаути хуків не лишилися другою редакцією в CLAUDE.md', () => {
+  const claudeMd = read('CLAUDE.md');
+
+  for (const event of ['PostToolUse', 'Stop'] as const) {
+    const strays = [...claudeMd.matchAll(new RegExp(`\x60${event}\x60 (\\d+) с`, 'g'))];
+    expect(strays, `${event}: таймаут згадано в CLAUDE.md — він живе у ${SKILL}`)
+      .toHaveLength(0);
   }
 });

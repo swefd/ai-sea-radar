@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(npm run verify)",
+      "Bash(npm run verify:*)"
+    ]
+  },
   "enabledPlugins": {
     "context7@claude-plugins-official": true,
     "skill-creator@claude-plugins-official": true,
