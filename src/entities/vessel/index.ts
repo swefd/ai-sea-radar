@@ -23,7 +23,15 @@
 // не дивиться.
 
 export type { Vessel, VesselSource } from './model/vessel';
-export { DEMO_VESSELS } from './model/demo-vessels';
+
+// Демонстраційний флот віддається МАРШРУТАМИ й чистою функцією кроку, а не
+// готовим масивом суден: із B-05 судно — похідне від маршруту й номера тіка.
+// `DEMO_VESSELS` із B-03 тут більше немає, і це заплановане заміщення, а не
+// втрата — споживачі й далі отримують `readonly Vessel[]`, тільки тепер із
+// `fleetAtTick`.
+export type { DemoRoute, RoutePoint } from './model/demo-routes';
+export { DEMO_ROUTES, DEMO_TICK_MS } from './model/demo-routes';
+export { fleetAtTick, lastFleetTick, vesselAtTick } from './lib/demo-fleet';
 
 export {
   UNKNOWN_VALUE,
