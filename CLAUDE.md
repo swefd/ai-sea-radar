@@ -72,14 +72,14 @@ npm run verify             # the check registry, fast tier — run this after a 
 npm run verify:full        # fast + build + e2e
 npm run verify:checkpoint  # full, and a SKIPPED counts as a failure — see "Перевірка"
 
-npx playwright test --project=unit          # unit tests: no browser, no dev server
-npx playwright test --project=e2e           # browser tests; boots the dev server
-npx playwright test                         # both projects; boots the dev server
-npx playwright test path/to/file.spec.ts    # one file
-npx playwright test -g "card opens"         # one test by name
+npx playwright test --project=unit                      # unit tests: no browser, no dev server
+npx playwright test --project=e2e                       # browser tests; boots the dev server
+npx playwright test --project=unit --project=e2e        # both projects
+npx playwright test --project=e2e path/to/file.spec.ts  # one file
+npx playwright test --project=e2e -g "повторний клік"   # one test by name
 ```
 
-Playwright's browser download is slow — run it in the background. Always pass `--project`: the dev server is booted for any selection that can include `e2e`, and a server failure in a unit run reads as a unit-test failure.
+Playwright's browser download is slow — run it in the background. **Always pass `--project`, including when narrowing by file or by name.** A bare `npx playwright test` selects every project but boots **no** dev server: `playwright.config.ts` derives `webServer` from an explicit `e2e` in the arguments, so since B-07 filled `tests/e2e/`, a bare run fails with a connection error to 127.0.0.1:3000. The config is deliberate — booting the server for a `unit` run would make a server failure read as a unit-test failure.
 
 ## Перевірка
 
@@ -101,7 +101,7 @@ Playwright's browser download is slow — run it in the background. Always pass 
 
 Подія `Stop` сама запускає рівень `fast` над деревом, яке назвала, і на блокувальному вердикті не дає завершити хід. **Ворота готовності — `verify:full`:** саме її зеленість дозволяє сказати людині «готово».
 
-**`verify:checkpoint` сьогодні виходить кодом 1, і це його робота, а не дефект.** Причина одна, названа в скілі `verify` — лагодити там нічого.
+**`verify:checkpoint` більше не має вбудованої причини виходити кодом 1.** Відколи B-07 наповнив `tests/e2e/`, рядок `e2e` виконується, а не пропускається: виміряно — обидві команди дають EXIT=0. Що ще здатне дати пропуск і як читати вердикт — у скілі `verify`.
 
 ### Залежності, додані шаром — свідомий виняток
 
