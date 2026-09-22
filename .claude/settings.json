@@ -3,6 +3,11 @@
     "allow": [
       "Bash(npm run verify)",
       "Bash(npm run verify:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.*.local)"
     ]
   },
   "enabledPlugins": {
