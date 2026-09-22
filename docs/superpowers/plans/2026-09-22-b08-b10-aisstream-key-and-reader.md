@@ -18,7 +18,9 @@
 - **Підписка:** поле `APIKey` (не `Apikey`, не `aPIKey` — §2.2 спеки), бокс `[[[50.75, 0.95], [51.25, 1.95]]]` у порядку `[lat, lon]`, фільтр `['PositionReport']`, надсилається **першою дією** в `onOpen` (джерело дає 3 секунди).
 - **`ws.binaryType = 'arraybuffer'` до підписки на події.** Виміряно: за замовчуванням `blob`, і `JSON.parse(event.data)` кидає `SyntaxError` на бінарному фреймі, який шле AISStream (§2.5 спеки).
 - **Константи вікна:** строк `15` секунд, ліміт `100` суден — у конфігурації, не в коді reader'а (`SPRINT-02.md:28`). Ліміт цього заходу не використовується, але оголошується там же.
-- **Фікстури ключів у тестах пишуться з префіксом `EXAMPLE-` або `SAMPLE-`.** Виміряно проти нашого ж `no-secrets`: рядок `APIKey: "test-key-not-real-1234"` дає ЗНАХІДКУ `assigned-secret`, а `APIKey: "EXAMPLE-KEY-NOT-A-REAL-ONE"` придушується шаблоном `PLACEHOLDER`. Без цієї конвенції `npm run verify` червоніє на власних тестах.
+- **Фікстури ключів у тестах пишуться з префіксом `EXAMPLE-` або `SAMPLE-`.** Виміряно проти нашого ж `no-secrets`: присвоєння `APIKey` значенню з 16+ символів без такого маркера дає ЗНАХІДКУ `assigned-secret`, а `APIKey: "EXAMPLE-KEY-NOT-A-REAL-ONE"` придушується шаблоном `PLACEHOLDER`. Без цієї конвенції `npm run verify` червоніє на власних тестах.
+
+  Цей рядок сам довів правило: перша редакція плану цитувала погану фікстуру дослівно, і `no-secrets` дав на ній дві знахідки — у файлі, який іде в передачу. Виключати план зі сканування не стали: `no-secrets.mjs` вимагає для виключення **виміряної ненульової користі**, а тут вона нульова — досить не писати форму присвоєння навіть як приклад того, чого робити не можна.
 - **Мова:** коментарі й назви тестів українською, як у наявних `tests/unit/*.spec.ts`. Імпорт у тестах — через аліас (`@/shared/...`), ніколи відносним шляхом і ніколи з `reference/`.
 - **Після кожної задачі:** `npm run verify` має бути зеленим. Перед здачею — `npm run verify:full`.
 
@@ -368,8 +370,8 @@ import { test, expect } from '@playwright/test';
 import { buildSubscription } from '@/shared/api/aisstream/subscription';
 
 // Фікстура ключа МУСИТЬ починатися з EXAMPLE- або SAMPLE-. Виміряно проти
-// нашого ж scripts/verify/checks/no-secrets.mjs: рядок виду
-// `APIKey: "test-key-not-real-1234"` дає ЗНАХІДКУ assigned-secret і робить
+// нашого ж scripts/verify/checks/no-secrets.mjs: присвоєння APIKey значенню
+// з 16+ символів без такого маркера дає ЗНАХІДКУ assigned-secret і робить
 // `npm run verify` червоним на власних тестах, а EXAMPLE-/SAMPLE- придушується
 // шаблоном PLACEHOLDER.
 const KEY = 'EXAMPLE-KEY-NOT-A-REAL-ONE';
