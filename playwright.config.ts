@@ -72,7 +72,11 @@ export default defineConfig({
     {
       name: 'e2e',
       testMatch: 'e2e/**/*.spec.ts',
-      use: { ...devices['Desktop Chrome'], baseURL: BASE_URL },
+      // `serviceWorkers: 'block'`: `page.route` не бачить запитів, перехоплених
+      // service worker кешу тайлів (документація Playwright), тож із SW тайли
+      // йшли б повз блокування мережі в select.spec.ts. SW перевіряє окремий
+      // tile-cache.spec.ts, який вмикає його сам.
+      use: { ...devices['Desktop Chrome'], baseURL: BASE_URL, serviceWorkers: 'block' },
     },
   ],
   webServer: needsServer
