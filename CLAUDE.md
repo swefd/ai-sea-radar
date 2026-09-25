@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 B-01 delivered the skeleton: `package.json`, `tsconfig.json`, `next.config.ts`, `.nvmrc`, `.gitignore`, `app/layout.tsx`, `app/page.tsx`, a lock file, and a git repo on `main`. B-02 onward extends it — do not re-scaffold. The verify layer (`scripts/verify/`, `.claude/hooks/`, `.claude/settings.json`) came after B-02; it is working method, not a backlog item — see "Перевірка".
 
+Release R1 (B-01…B-07) is closed by `docs/checkpoints/CHECKPOINT-01.md`. The current sprint is SPRINT-02 (release R2, B-08…B-13); B-08…B-10 are committed, B-11…B-13 are in progress.
+
 ## What Sea Radar is
 
 A local web app for a maritime training centre: a map of the Dover Strait with ships on it and a card per ship, run on the instructor's laptop during a lesson. Localhost only, loopback only, single user, nothing deployed.
@@ -13,7 +15,8 @@ A local web app for a maritime training centre: a map of the Dover Strait with s
 ## Requirements live in `docs/tasks/`
 
 - `PROJECT_BRIEF.md` — the client contract: user stories US-01…US-10 with acceptance criteria.
-- `SPRINT-01.md` — the current sprint (release R1, items B-01…B-07, covering US-01…US-04). Part A is what to build; Part B is the working method.
+- `SPRINT-01.md` — release R1, items B-01…B-07, covering US-01…US-04; closed. Its agreed values still hold.
+- `SPRINT-02.md` — the current sprint (release R2, items B-08…B-13, covering US-05…US-08). Part A is what to build; Part B is the working method.
 - `ABOUT.md` — how the course and its deliverables are organised.
 
 Later sprint files are handed over **one at a time, deliberately**. Build only what is in the folder; do not design for requirements that have not arrived. Read the task file itself, never a summary of it.
@@ -33,7 +36,7 @@ Each subfolder has its own `CLAUDE.md` naming the two or three files worth openi
 | strict `tsconfig.json`, file and folder conventions (B-01) | `reference/bulletproof-react/` — start at its `AGENTS.md` |
 | a decision about where a module belongs | `reference/fsd-documentation/` **and** the installed `feature-sliced-design` skill (skill first) |
 | an abstraction to remove real, existing duplication | `reference/design-patterns-typescript/` — read-only, see below |
-| _(R2+, not now)_ AISStream messages and the socket handshake | `reference/ais-message-models/`, `reference/aisstream-typescript-example/` |
+| _(R2, open now)_ AISStream messages and the socket handshake | `reference/ais-message-models/`, `reference/aisstream-typescript-example/` |
 
 **Rules, non-negotiable:**
 
@@ -42,7 +45,7 @@ Each subfolder has its own `CLAUDE.md` naming the two or three files worth openi
 - **Read-only.** Four of the six are live git checkouts; never edit a file there.
 - **A reference shows _how_, never _what_.** `docs/tasks/` decides scope. React Query, Zustand, Tailwind, MSW, Vitest and Storybook appear in these repos; none of them is thereby permitted.
 - **`design-patterns-typescript` is CC BY-NC-ND.** Read for the idea, write your own; its code must not be copied or adapted into the app. Everything else is MIT or ISC — port with attribution.
-- **Don't read ahead.** The two AIS folders belong to R2. This sprint does not prepare for real data, and that includes studying it.
+- **Don't read ahead.** The two AIS folders belonged to R2, and R2 is the current sprint — they are open. They show the message shape and the handshake; field names and case come from the saved sample in `data/samples/`, not from them (`SPRINT-02.md:25`, `:90`).
 - **Keep it out of the build and out of the repo.** `reference/` holds 532 `.ts`/`.tsx` files, so exclude it from `tsconfig.json`, ESLint and Playwright's `testDir`, and list it in `.gitignore` when B-01 creates the repo — `fsd-documentation/.git` alone is 407 MB, and the client inspects the handed-over files.
 
 Project-local notes (not third-party) are in `docs/context/`: `clean-code-ts.md`, a Next.js note on lazy-loading client components that bears on the client-only Leaflet mount in B-02, and `verify-layer.md` — what the verify layer owes the checkpoint record.
@@ -133,7 +136,7 @@ The map and the card must read from the same state, and one tick drives all ship
 
 ## Boundaries this sprint
 
-No real data, no fetch button, no server-side scaffolding, no "for later" folders, no example code from `create-next-app`, no extra **application** dependencies — the three verification tools (`eslint`, `eslint-config-next`, `@playwright/test`) are a deliberate exception, justified and recorded in "Перевірка". Real AIS data is a later release; do not prepare for it.
+Real AIS data and the one fetch button are in scope, exactly as `SPRINT-02.md:23`…`:37` agrees them: the key and the socket live only on the server, behind `GET /api/snapshot`. Still out: server code beyond that endpoint and its modules, "for later" folders, example code from `create-next-app`, extra **application** dependencies — the three verification tools (`eslint`, `eslint-config-next`, `@playwright/test`) are a deliberate exception, justified and recorded in "Перевірка". Anything not in SPRINT-02 is not prepared for.
 
 The brief also rules these out permanently: zones and alerts, track history and playback, search and filters, multiple regions, saved settings, live streaming, remote access, hosting, predictions.
 
