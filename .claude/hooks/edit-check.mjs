@@ -47,7 +47,7 @@ export const IGNORED_PREFIXES = [
 ];
 
 /** Те саме, але записи `globalIgnores`, які є іменами файлів, а не теками. */
-export const IGNORED_FILES = ['next-env.d.ts'];
+export const IGNORED_FILES = ['next-env.d.ts', 'public/tile-sw.js', 'public/tile-freshness.js'];
 export const TYPECHECK_CACHE_DIR = '.verify/typecheck';
 
 // Рядок, за яким гучне «не виконалось» упізнається і оком, і тестом. Він же

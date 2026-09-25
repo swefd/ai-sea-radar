@@ -83,6 +83,13 @@ SW читає його з `self.location`. Рядок `tile.openstreetmap.org` �
 лежить скрипт. `public/tile-sw/tile-sw.js` не контролював би сторінку `/` без заголовка
 `Service-Worker-Allowed`, а такий заголовок вимагав би серверного коду.
 
+> **Змінено планом (2026-09-25).** `lib: WebWorker` і `exclude` у головному `tsconfig`, описані
+> в §4.1 і §4.4, **не реалізовані**. `scripts/verify/hash.mjs:78` тримає `NON_SOURCE_PREFIXES`
+> дзеркалом `exclude` — «рівно воно», — і новий `exclude` зламав би цю рівність. Натомість
+> `tsconfig.sw.json` компілює з `lib: DOM`, а п'ять потрібних членів SW API описано в
+> `tile-sw.ts` локальним інтерфейсом. Головний `tsc` перевіряє SW під strict без виключень.
+> Обґрунтування — `docs/superpowers/plans/2026-09-25-tile-cache.md`, «Відхилення від спеки».
+
 ### 4.4. Збірка SW — виміряно
 
 Пробний SW (strict, `lib: WebWorker`) скомпільовано встановленим `typescript@6.0.3` в
