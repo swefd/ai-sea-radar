@@ -3,8 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "npm run --silent build:sw",
     "dev": "next dev -H 127.0.0.1 -p 3000",
+    "prebuild": "npm run --silent build:sw",
     "build": "next build",
+    "build:sw": "tsc -p tsconfig.sw.json",
     "lint": "eslint .",
     "check-types": "tsc -p tsconfig.json --pretty --noEmit",
     "verify": "node scripts/verify/run.mjs --tier fast",

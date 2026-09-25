@@ -59,3 +59,7 @@ next-env.d.ts
 
 # трейси невдалих прогонів: R-41 зробив trace 'retain-on-failure'
 /test-results/
+
+# service worker кешу тайлів: згенеровано `npm run build:sw` з src/_app/tile-cache/
+/public/tile-sw.js
+/public/tile-freshness.js

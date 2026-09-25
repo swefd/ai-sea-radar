@@ -24,6 +24,10 @@ export default defineConfig([
     // випадкова помилка в чернетці зробила б червоною задачу, чий виконавець
     // цих файлів навіть не має права чіпати (R-37).
     '.superpowers/**',
+    // Скомпільований service worker кешу тайлів. Джерело — у src/_app/tile-cache/
+    // і лінтується там; вивід tsc лінтувати немає сенсу.
+    'public/tile-sw.js',
+    'public/tile-freshness.js',
   ]),
   ...nextVitals,
   {

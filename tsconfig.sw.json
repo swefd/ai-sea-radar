@@ -1,0 +1,18 @@
+{
+  "//": "Компілює service worker кешу тайлів у корінь public/ (спека 2026-09-25-tile-cache). Перевіряє ці ж файли й головний tsconfig; цей лише випускає JS.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "ES2022"],
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "types": [],
+    "noEmit": false,
+    "incremental": false,
+    "rootDir": "src/_app/tile-cache",
+    "outDir": "public"
+  },
+  "files": ["src/_app/tile-cache/tile-sw.ts", "src/_app/tile-cache/tile-freshness.ts"]
+}
