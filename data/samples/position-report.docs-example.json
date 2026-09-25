@@ -1,0 +1,20 @@
+{
+  "_note": "НЕ ОТРИМАНИЙ ІЗ ЖИВОГО ДЖЕРЕЛА — приклад за схемою документації aisstream.io. Див. PROVENANCE.md.",
+  "MessageType": "PositionReport",
+  "MetaData": {
+    "MMSI": 368207620,
+    "ShipName": "EXAMPLE VESSEL",
+    "Latitude": 51.0,
+    "Longitude": 1.45
+  },
+  "Message": {
+    "PositionReport": {
+      "Sog": 12.4,
+      "Cog": 86.7,
+      "TrueHeading": 87,
+      "Latitude": 51.0,
+      "Longitude": 1.45,
+      "Valid": true
+    }
+  }
+}

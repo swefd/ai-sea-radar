@@ -1,20 +1,32 @@
 {
-  "_note": "НЕ ОТРИМАНИЙ ІЗ ЖИВОГО ДЖЕРЕЛА — приклад за схемою документації aisstream.io. Див. PROVENANCE.md.",
-  "MessageType": "PositionReport",
   "MetaData": {
-    "MMSI": 368207620,
-    "ShipName": "EXAMPLE VESSEL",
-    "Latitude": 51.0,
-    "Longitude": 1.45
+    "MMSI": 210385000,
+    "MMSI_String": 210385000,
+    "ShipName": "P&O PIONEER",
+    "latitude": 51.12287,
+    "longitude": 1.33462,
+    "time_utc": "2026-09-25 17:33:56.513832924 +0000 UTC"
   },
+  "MessageType": "PositionReport",
   "Message": {
     "PositionReport": {
-      "Sog": 12.4,
-      "Cog": 86.7,
-      "TrueHeading": 87,
-      "Latitude": 51.0,
-      "Longitude": 1.45,
-      "Valid": true
+      "MessageID": 1,
+      "RepeatIndicator": 0,
+      "UserID": 210385000,
+      "Valid": true,
+      "NavigationalStatus": 0,
+      "RateOfTurn": 0,
+      "Sog": 0,
+      "PositionAccuracy": false,
+      "Longitude": 1.3346183333333335,
+      "Latitude": 51.12287333333334,
+      "Cog": 48.2,
+      "TrueHeading": 138,
+      "Timestamp": 55,
+      "SpecialManoeuvreIndicator": 0,
+      "Spare": 0,
+      "Raim": false,
+      "CommunicationState": 25220
     }
   }
 }

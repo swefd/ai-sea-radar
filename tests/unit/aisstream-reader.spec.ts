@@ -95,21 +95,40 @@ test('перше повідомлення віддається СИРИМ, бе�
   });
 });
 
-test('SubscriptionConfirmation теж вважається першим повідомленням', async () => {
+test('SubscriptionConfirmation ПРОПУСКАЄТЬСЯ — віддається перша позиція після нього', async () => {
   // SPRINT-02:23 стверджує, що підтвердження не надсилається; жива документація
-  // каже протилежне. Розходження прийняте свідомо (§4.2 рішення): завдання
-  // каже «перше отримане повідомлення як є», і фільтрація за MessageType була б
-  // уже розбором формату, тобто роботою B-11.
+  // і вимір 2026-09-25 (data/samples/PROVENANCE.md) кажуть протилежне. Доки
+  // reader віддавав «перше повідомлення як є», endpoint щоразу повертав
+  // підтвердження, і живого зразка позиції для B-11 не було звідки взяти.
+  // Тимчасово до переключення на збирач (план B-11…B-13, 0.4): фаза 2 видаляє
+  // reader разом із цим тестом.
   const s = stand();
   const promise = run(s);
   s.handlers.onOpen();
   s.handlers.onMessage('{"MessageType":"SubscriptionConfirmation"}');
+  s.handlers.onMessage('{"MessageType":"PositionReport","MetaData":{"MMSI":123}}');
 
   const result = await promise;
   expect(result).toEqual({
     kind: 'message',
-    raw: { MessageType: 'SubscriptionConfirmation' },
+    raw: { MessageType: 'PositionReport', MetaData: { MMSI: 123 } },
   });
+});
+
+test('лише не-позиційні повідомлення до кінця строку — empty, а не підтвердження', async () => {
+  // Пропущене повідомлення не завершує спробу: без цього тесту заміна
+  // пропуску на `settle(empty)` одразу після підтвердження лишилася б зеленою.
+  const s = stand();
+  const promise = run(s);
+  s.handlers.onOpen();
+  s.handlers.onMessage('{"MessageType":"SubscriptionConfirmation"}');
+  s.handlers.onMessage('{"MessageType":"StandardClassBPositionReport"}');
+
+  expect(s.closes).toBe(0);         // спроба триває
+  expect(s.liveTimers).toBe(1);
+
+  s.fireTimers();
+  expect(await promise).toEqual({ kind: 'empty' });
 });
 
 test('строк без повідомлень при живому з\'єднанні — empty, НЕ помилка', async () => {
@@ -183,14 +202,14 @@ test('РЕЗУЛЬТАТ ЗАВЕРШУЄТЬСЯ РІВНО ОДИН РАЗ —
   const s = stand();
   const promise = run(s);
   s.handlers.onOpen();
-  s.handlers.onMessage('{"n":1}');
+  s.handlers.onMessage('{"MessageType":"PositionReport","n":1}');
 
-  s.handlers.onMessage('{"n":2}');
+  s.handlers.onMessage('{"MessageType":"PositionReport","n":2}');
   s.handlers.onError();
   s.handlers.onClose();
   s.fireTimers();
 
-  expect(await promise).toEqual({ kind: 'message', raw: { n: 1 } });
+  expect(await promise).toEqual({ kind: 'message', raw: { MessageType: 'PositionReport', n: 1 } });
 
   // Сам лише результат подвійного завершення НЕ показує: resolve() на вже
   // вирішеному промісі тихо нічого не робить, тож `expect(await promise)` вище
@@ -204,7 +223,7 @@ test('прибирання на КОЖНОМУ результаті — соке
   // Друга й третя пастки SPRINT-02:92: таймер вікна не очищається; ресурси
   // течуть. Перевіряємо всі чотири виходи, а не лише щасливий.
   for (const drive of [
-    (s: ReturnType<typeof stand>) => { s.handlers.onOpen(); s.handlers.onMessage('{"n":1}'); },
+    (s: ReturnType<typeof stand>) => { s.handlers.onOpen(); s.handlers.onMessage('{"MessageType":"PositionReport"}'); },
     (s: ReturnType<typeof stand>) => { s.handlers.onOpen(); s.fireTimers(); },
     (s: ReturnType<typeof stand>) => { s.handlers.onOpen(); s.handlers.onError(); },
     (s: ReturnType<typeof stand>) => { s.handlers.onClose(); },
@@ -236,7 +255,7 @@ test('скасування запиту закриває ресурси й да�
 test('ключ не тече у результат — ні в успіху, ні в помилці', async () => {
   // Критерій B-09: «ключ не в логах і відповіді».
   for (const drive of [
-    (s: ReturnType<typeof stand>) => { s.handlers.onOpen(); s.handlers.onMessage('{"n":1}'); },
+    (s: ReturnType<typeof stand>) => { s.handlers.onOpen(); s.handlers.onMessage('{"MessageType":"PositionReport"}'); },
     (s: ReturnType<typeof stand>) => { s.handlers.onOpen(); s.handlers.onError(); },
   ]) {
     const s = stand();

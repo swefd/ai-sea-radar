@@ -1,6 +1,6 @@
 // Reader: відкриває з'єднання ЧУЖИМИ руками, шле підписку, віддає перше
-// повідомлення сирим. Джерело: docs/tasks/SPRINT-02.md:43, :29; проєктне
-// рішення §4.2, §4.3.
+// повідомлення PositionReport сирим. Джерело: docs/tasks/SPRINT-02.md:43, :29;
+// проєктне рішення §4.2, §4.3.
 //
 // ЦЕЙ МОДУЛЬ НЕ ЗНАЄ СЛОВА WebSocket. Джерело подій і таймер — параметри, і це
 // не стиль, а те, що робить сюїту вище здійсненною без мережі й без очікування
@@ -51,6 +51,13 @@ export type ReadOptions = {
   clearTimer: (id: TimerId) => void;
   signal?: AbortSignal;
 };
+
+/** Лише тип конверта — поля позиції reader не читає. */
+function isPositionReport(raw: unknown): boolean {
+  return typeof raw === 'object'
+    && raw !== null
+    && (raw as { MessageType?: unknown }).MessageType === 'PositionReport';
+}
 
 export function readFirstMessage(options: ReadOptions): Promise<ReadResult> {
   const { connect, apiKey, windowMs, setTimer, clearTimer, signal } = options;
@@ -129,13 +136,23 @@ export function readFirstMessage(options: ReadOptions): Promise<ReadResult> {
         },
 
         onMessage: (text) => {
-          // Формат НЕ розбирається — лише JSON.parse. Яке саме це повідомлення,
-          // вирішить B-11 за зразком із B-10.
+          // Формат НЕ розбирається — лише JSON.parse і тип повідомлення. Поля
+          // позиції читатиме B-11 за зразком.
+          let raw: unknown;
           try {
-            settle({ kind: 'message', raw: JSON.parse(text) });
+            raw = JSON.parse(text);
           } catch {
             settle({ kind: 'error', code: 'internal' });
+            return;
           }
+
+          // Не-позиція ПРОПУСКАЄТЬСЯ, а не завершує спробу. Джерело шле
+          // SubscriptionConfirmation першим (PROVENANCE.md, вимір 2026-09-25),
+          // і «перше повідомлення як є» щоразу давало б підтвердження замість
+          // зразка для B-11. Тимчасово: фаза 2 плану B-11…B-13 видаляє reader.
+          if (!isPositionReport(raw)) return;
+
+          settle({ kind: 'message', raw });
         },
 
         onError: () => settle({ kind: 'error', code: 'provider_error' }),
