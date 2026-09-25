@@ -7,36 +7,7 @@
 // 15 секунд. B-12 успадкує цю саму межу й змінить лише логіку накопичення.
 
 import { buildSubscription } from './subscription';
-
-export type SocketHandlers = {
-  onOpen: () => void;
-  onMessage: (text: string) => void;
-  onError: () => void;
-  onClose: () => void;
-};
-
-export type SocketHandle = {
-  send: (text: string) => void;
-  close: () => void;
-};
-
-/**
- * Джерело подій. Reader не знає, що за ним — сокет, підставка чи запис.
- *
- * Реалізація МОЖЕ смикати обробники синхронно, ще не повернувши handle:
- * reader це витримує (див. `subscribe()` і варту на таймері). Покладатися на
- * зворотне не можна — цю межу успадкує збирач B-12, де джерелом подій буде
- * вже не `liveConnect`.
- */
-export type Connect = (handlers: SocketHandlers) => SocketHandle;
-
-export type TimerId = ReturnType<typeof setTimeout>;
-
-export type ReadErrorCode =
-  | 'connect_failed'
-  | 'provider_error'
-  | 'disconnected'
-  | 'internal';
+import type { Connect, ReadErrorCode, SocketHandle, TimerId } from './transport';
 
 export type ReadResult =
   | { kind: 'message'; raw: unknown }

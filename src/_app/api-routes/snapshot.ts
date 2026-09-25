@@ -2,7 +2,8 @@
 // (проміжна форма B-09), проєктне рішення §4.4.
 
 import { liveConnect } from '@/shared/api/aisstream/connect';
-import { readFirstMessage, type ReadErrorCode } from '@/shared/api/aisstream/reader';
+import { readFirstMessage } from '@/shared/api/aisstream/reader';
+import type { ReadErrorCode } from '@/shared/api/aisstream/transport';
 import { readApiKey, SNAPSHOT_WINDOW_SECONDS } from '@/shared/config';
 
 /**

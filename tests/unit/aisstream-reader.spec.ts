@@ -1,10 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-import {
-  readFirstMessage,
-  type Connect,
-  type SocketHandlers,
-} from '@/shared/api/aisstream/reader';
+import { readFirstMessage } from '@/shared/api/aisstream/reader';
+import type { Connect, SocketHandlers } from '@/shared/api/aisstream/transport';
 
 const KEY = 'EXAMPLE-KEY-NOT-A-REAL-ONE';
 

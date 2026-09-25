@@ -5,7 +5,7 @@
 
 import { AISSTREAM_ENDPOINT } from '@/shared/config';
 
-import type { Connect, SocketHandle, SocketHandlers } from './reader';
+import type { Connect, SocketHandle, SocketHandlers } from './transport';
 
 /**
  * Відкриває справжній сокет.
