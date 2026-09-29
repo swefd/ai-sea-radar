@@ -3,8 +3,8 @@
 // docs/tasks/SPRINT-02.md:28, :29, :92; SPRINT-03.md:43…:58; план
 // docs/superpowers/plans/2026-09-29-sprint-03.md, задача 2.
 //
-// Механіка «завершитися рівно раз» успадкована від reader.ts дослівно за
-// змістом: один сторож `settle`, `subscribe()`, що витримує синхронний onOpen,
+// Механіка «завершитися рівно раз» успадкована від reader.ts (B-09, прибраний
+// у B-12, коли endpoint перейшов на збирач) дослівно за змістом: один сторож `settle`, `subscribe()`, що витримує синхронний onOpen,
 // повторне закриття handle після повернення `connect`, варта `if (!settled)`
 // над таймером. Змінено лише те, ЩО накопичується, і дві навмисні розбіжності:
 // помилка сокета ДО відкриття — `connect_failed` (SPRINT-02:29; reader тут
@@ -91,7 +91,7 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
     /**
      * Надсилання підписки, стійке до ПОРЯДКУ подій. `onOpen` може прийти
      * синхронно, ще до того, як `connect` повернув handle; тоді відправка
-     * відкладається до присвоєння нижче. Ідемпотентна. Докладно — reader.ts.
+     * відкладається до присвоєння нижче. Ідемпотентна.
      */
     const subscribe = () => {
       if (subscribed || handle === null) return;
@@ -148,7 +148,7 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
           if (settled) return;
 
           // Збір — потік, а не одна відповідь: один битий кадр не має вбивати
-          // знімок, тому НЕ `internal`, як у reader, а пропуск.
+          // знімок, тому НЕ `internal`, як у колишньому reader, а пропуск.
           let raw: unknown;
           try {
             raw = JSON.parse(text);

@@ -1,4 +1,4 @@
-// ЄДИНИЙ модуль проєкту, який знає слово WebSocket. Усе, що вище — reader,
+// ЄДИНИЙ модуль проєкту, який знає слово WebSocket. Усе, що вище — збирач,
 // адаптер, endpoint — працює з межею Connect і про транспорт не здогадується.
 //
 // Джерело: документація aisstream.io; проєктне рішення §4.2.
@@ -53,7 +53,7 @@ export const liveConnect: Connect = (handlers: SocketHandlers): SocketHandle => 
     send: (text: string) => socket.send(text),
     close: () => {
       // Закриття сокета, який ще не відкрився, кидає InvalidStateError.
-      // Ковтаємо: reader кличе close() на КОЖНОМУ результаті, включно з
+      // Ковтаємо: збирач кличе close() на КОЖНОМУ результаті, включно з
       // «не змогли підключитися», і там сокет саме в цьому стані.
       try {
         socket.close();
