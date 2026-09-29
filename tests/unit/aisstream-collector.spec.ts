@@ -232,9 +232,17 @@ test('помилка провайдера після трьох валідних
   const promise = run(s);
   s.handlers.onOpen();
   for (const id of ['A', 'B', 'C']) s.send({ id, t: '2026-01-01T12:00:00Z', p: 'P' });
-  s.handlers.onError();
+  s.send({ error: 'Api Key Is Not Valid' });
   expect(await promise).toEqual({ kind: 'error', code: 'provider_error', finishedAt: 1767268800000 });
   expectReleased(s);
+});
+
+test('текст помилки провайдера не тече в результат', async () => {
+  const s = stand();
+  const promise = run(s);
+  s.handlers.onOpen();
+  s.send({ error: 'SECRET-TEXT-FROM-PROVIDER' });
+  expect(JSON.stringify(await promise)).not.toContain('SECRET-TEXT-FROM-PROVIDER');
 });
 
 test('розрив після трьох валідних → disconnected, без часткового набору', async () => {
@@ -360,7 +368,7 @@ const ENDINGS: ReadonlyArray<{
   { label: 'connect кинув', expected: { kind: 'error', code: 'connect_failed' }, closes: 0,
     play: (s) => run(s, { connect: () => { throw new Error('dns'); } }) },
   { label: 'помилка провайдера після судна', expected: { kind: 'error', code: 'provider_error' }, closes: 1,
-    play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.handlers.onError(); return p; } },
+    play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.send({ error: 'Api Key Is Not Valid' }); return p; } },
   { label: 'розрив після судна', expected: { kind: 'error', code: 'disconnected' }, closes: 1,
     play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.handlers.onClose(); return p; } },
   { label: 'перетворювач кинув', expected: { kind: 'error', code: 'internal' }, closes: 1,

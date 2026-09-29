@@ -45,6 +45,12 @@ type Outcome<T> =
   | { kind: 'done'; items: T[]; reason: 'window_elapsed' | 'limit_reached' }
   | { kind: 'error'; code: ReadErrorCode };
 
+/** Кадр помилки джерела: об'єкт із рядковим полем `error`. */
+function isProviderError(raw: unknown): boolean {
+  return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+    && typeof (raw as { error?: unknown }).error === 'string';
+}
+
 export function collect<T extends Collectable>(options: CollectOptions<T>): Promise<CollectResult<T>> {
   const { connect, apiKey, windowMs, limit, toItem, now, setTimer, clearTimer, signal } = options;
 
@@ -153,6 +159,16 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
           try {
             raw = JSON.parse(text);
           } catch {
+            return;
+          }
+
+          // Помилку AISStream шле КАДРОМ `{ "error": "..." }`, а не подією
+          // сокета (модель ModelError документації джерела). Без цієї гілки
+          // кадр ішов би в toItem → null і пропадав мовчки, а за живого
+          // з'єднання спроба віддала б частковий набір як успіх (F2, B-17;
+          // SPRINT-03:52). Текст помилки не зберігається — SPRINT-02:29.
+          if (isProviderError(raw)) {
+            settle({ kind: 'error', code: 'provider_error' });
             return;
           }
 

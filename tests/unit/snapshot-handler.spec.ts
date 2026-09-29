@@ -71,6 +71,7 @@ for (const [label, drive, code, message] of [
   ['помилка до відкриття', (h: SocketHandlers) => h.onError(), 'connect_failed', 'Не вдалося підключитися до джерела'],
   ['помилка після відкриття', (h: SocketHandlers) => { h.onOpen(); h.onError(); }, 'provider_error', 'Джерело повернуло помилку'],
   ['розрив після підписки', (h: SocketHandlers) => { h.onOpen(); h.onClose(); }, 'disconnected', "З'єднання з джерелом розірвано"],
+  ['помилка провайдера кадром', (h: SocketHandlers) => { h.onOpen(); h.onMessage('{"error":"Api Key Is Not Valid"}'); }, 'provider_error', 'Джерело повернуло помилку'],
 ] as const) {
   test(`${label}: HTTP 502, ${code}`, async () => {
     const response = await harness(drive)();
