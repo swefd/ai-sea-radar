@@ -18,6 +18,14 @@ import { blockExternal } from './support/offline';
 
 const DEMO_1 = '[data-vessel-id="demo-1"]';
 
+// Позицію значка міряємо за НЕЗВЕРНЕНИМ коренем маркера Leaflet, а не за
+// вузлом із data-vessel-id: той — дочірній гліф, повернутий на курс
+// (vessel-icon.ts), і його рамка змінюється вже від самої зміни кута, навіть
+// коли маркер стоїть на місці. transform кореня пише лише setLatLng.
+function markerRoot(page: Page) {
+  return page.locator('.leaflet-marker-icon', { has: page.locator(DEMO_1) });
+}
+
 function cardField(page: Page, label: string) {
   return page
     .locator('aside dl > div')
@@ -33,9 +41,10 @@ test.beforeEach(async ({ page }) => {
   // Карта — окремий чанк dynamic(..., { ssr: false }), і його завантаження чекає
   // на таймери, які поставлений на паузу підмінний годинник тримає: без руху
   // часу значок не з'являється ніколи. Тож час просуваємо обмеженими кроками по
-  // 100 мс, сумарно менше за секунду. startedAt уже прочитано при монтуванні
-  // панелі (vessel-view.tsx:101) на паузі, тобто 12:00:00; а інтервал демонстрації
-  // (2000 мс) за <1 с ще не спрацював. Це стереже перший тест: 12:00:00 UTC.
+  // 100 мс, сумарно менше за секунду. startedAt (vessel-view.tsx:101) читається
+  // при монтуванні панелі; чи це сталося до чи під час цих кроків, тест не знає —
+  // доведено лише, що до першого тіка час старту в межах тієї самої секунди
+  // 12:00:00 (перший тест). Інтервал демонстрації (2000 мс) за <1 с не спрацьовує.
   const marker = page.locator(DEMO_1);
   let advancedMs = 0;
   while ((await marker.count()) === 0 && advancedMs < 900) {
@@ -54,7 +63,8 @@ test('до першого тіка: точка 0 і час старту', async 
 });
 
 test('через чотири тіки: значок зрушив, картка показує нові координати', async ({ page }) => {
-  const before = await page.locator(DEMO_1).boundingBox();
+  await expect(markerRoot(page)).toHaveCount(1);
+  const before = await markerRoot(page).boundingBox();
 
   await page.clock.runFor(8_000);
 
@@ -62,8 +72,15 @@ test('через чотири тіки: значок зрушив, картка 
   await expect(cardField(page, 'Швидкість')).toHaveText('18 kn');
   await expect(cardField(page, 'Курс')).toHaveText('232°');
   await expect(cardField(page, 'Час повідомлення')).toHaveText('12:00:08 UTC');
-  // Карта й картка читають один стан: зрушила не лише картка, а й значок.
-  expect(await page.locator(DEMO_1).boundingBox()).not.toEqual(before);
+  // Карта й картка читають один стан: зрушила не лише картка, а й сам маркер.
+  // Точка 0 → точка 4 — на південний захід: на зумі 10 це близько 296 px ліворуч
+  // і 267 px донизу. Пороги 100 px відсікають і поворот гліфа (частки пікселя),
+  // і випадкове тремтіння, але не справжній зсув; напрям перевіряється знаком.
+  const after = await markerRoot(page).boundingBox();
+  expect(before).not.toBeNull();
+  expect(after).not.toBeNull();
+  expect(before!.x - after!.x).toBeGreaterThan(100);
+  expect(after!.y - before!.y).toBeGreaterThan(100);
 });
 
 test('за кінцем маршруту: остання точка, 0 kn, курс і час останнього кроку, далі без змін', async ({ page }) => {
@@ -74,7 +91,10 @@ test('за кінцем маршруту: остання точка, 0 kn, ку�
   await expect(cardField(page, 'Швидкість')).toHaveText('0 kn');
   await expect(cardField(page, 'Курс')).toHaveText('227°');
   await expect(cardField(page, 'Час повідомлення')).toHaveText('12:00:14 UTC');
-  const stopped = await page.locator(DEMO_1).boundingBox();
+  await expect(markerRoot(page)).toHaveCount(1);
+  const stopped = await markerRoot(page).boundingBox();
+  // Без цього порівняння нижче було б порожнім: зниклий маркер дав би null === null.
+  expect(stopped).not.toBeNull();
 
   // Ще хвилина — нічого не змінюється: без петлі й без повторного старту.
   await page.clock.runFor(60_000);
@@ -82,5 +102,5 @@ test('за кінцем маршруту: остання точка, 0 kn, ку�
   await expect(cardField(page, 'Координати')).toHaveText('50.81100, 1.05400');
   await expect(cardField(page, 'Швидкість')).toHaveText('0 kn');
   await expect(cardField(page, 'Час повідомлення')).toHaveText('12:00:14 UTC');
-  expect(await page.locator(DEMO_1).boundingBox()).toEqual(stopped);
+  expect(await markerRoot(page).boundingBox()).toEqual(stopped);
 });
