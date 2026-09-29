@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-import { collect } from '@/shared/api/aisstream/collector';
+import { collect, type CollectResult } from '@/shared/api/aisstream/collector';
 import type { Connect, SocketHandlers } from '@/shared/api/aisstream/transport';
 
 // Тести збирача, B-15 (docs/tasks/SPRINT-03.md:43…:58). Без WebSocket і без
@@ -32,6 +32,8 @@ function stand() {
     connect,
     sent,
     get closes() { return closes; },
+    /** Чи викликав збирач `connect` — без цього пізні події нікуди подати. */
+    get connected() { return handlers !== null; },
     get handlers() {
       if (handlers === null) throw new Error('connect ще не викликано');
       return handlers;
@@ -53,16 +55,18 @@ function stand() {
 }
 
 function toItem(raw: unknown): Item | null {
-  const r = raw as { id?: unknown; t?: unknown; p?: unknown; name?: string | null; skip?: boolean };
+  const r = raw as { id?: unknown; t?: unknown; p?: unknown; name?: string | null; skip?: boolean; boom?: boolean };
+  // `boom` — вада перетворювача, а не джерела: збирач мусить відповісти `internal`.
+  if (r.boom === true) throw new Error('boom');
   if (r.skip === true || typeof r.id !== 'string' || typeof r.t !== 'string' || typeof r.p !== 'string') {
     return null;
   }
   return { id: r.id, timestamp: r.t, p: r.p, name: r.name ?? null };
 }
 
-function run(s: ReturnType<typeof stand>, opts: { limit?: number; signal?: AbortSignal } = {}) {
+function run(s: ReturnType<typeof stand>, opts: { limit?: number; signal?: AbortSignal; connect?: Connect } = {}) {
   return collect<Item>({
-    connect: s.connect,
+    connect: opts.connect ?? s.connect,
     apiKey: KEY,
     windowMs: 15_000,
     limit: opts.limit ?? 100,
@@ -318,3 +322,81 @@ test('connect, що смикає onOpen синхронно, — підписка
   s.fireTimers();
   expect((await promise).kind).toBe('done');
 });
+
+// SPRINT-03:58 — «після БУДЬ-ЯКОГО результату спроба не лишає відкритих
+// з'єднань і відкладених дій». Окремі тести вище перевіряють це вибірково;
+// тут — кожна гілка `settle` у collector.ts, по одному рядку на гілку.
+// Очікуване `closes` — літерал: 0 там, де з'єднання так і не з'явилося.
+// Після результату в стенд подаються пізні події — вони не мають ні
+// відкрити/закрити щось удруге, ні поставити таймер.
+
+type Stand = ReturnType<typeof stand>;
+const AT = '2026-01-01T12:00:00Z';
+
+const ENDINGS: ReadonlyArray<{
+  label: string;
+  expected: Record<string, unknown>;
+  closes: 0 | 1;
+  play: (s: Stand) => Promise<CollectResult<Item>>;
+}> = [
+  { label: 'вікно минуло, порожньо', expected: { kind: 'done', reason: 'window_elapsed' }, closes: 1,
+    play: (s) => { const p = run(s); s.handlers.onOpen(); s.fireTimers(); return p; } },
+  { label: 'вікно минуло, з судном', expected: { kind: 'done', reason: 'window_elapsed' }, closes: 1,
+    play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.fireTimers(); return p; } },
+  { label: 'ліміт', expected: { kind: 'done', reason: 'limit_reached' }, closes: 1,
+    play: (s) => { const p = run(s, { limit: 2 }); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.send({ id: 'B', t: AT, p: 'P' }); return p; } },
+  { label: 'строк минув без відкриття', expected: { kind: 'error', code: 'connect_failed' }, closes: 1,
+    play: (s) => { const p = run(s); s.fireTimers(); return p; } },
+  { label: 'помилка сокета до відкриття', expected: { kind: 'error', code: 'connect_failed' }, closes: 1,
+    play: (s) => { const p = run(s); s.handlers.onError(); return p; } },
+  { label: 'закриття до підписки', expected: { kind: 'error', code: 'connect_failed' }, closes: 1,
+    play: (s) => { const p = run(s); s.handlers.onClose(); return p; } },
+  { label: 'підписка не надіслалась', expected: { kind: 'error', code: 'connect_failed' }, closes: 1,
+    play: (s) => {
+      const p = run(s, { connect: (h) => ({ ...s.connect(h), send: () => { throw new Error('send'); } }) });
+      s.handlers.onOpen();
+      return p;
+    } },
+  { label: 'connect кинув', expected: { kind: 'error', code: 'connect_failed' }, closes: 0,
+    play: (s) => run(s, { connect: () => { throw new Error('dns'); } }) },
+  { label: 'помилка провайдера після судна', expected: { kind: 'error', code: 'provider_error' }, closes: 1,
+    play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.handlers.onError(); return p; } },
+  { label: 'розрив після судна', expected: { kind: 'error', code: 'disconnected' }, closes: 1,
+    play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.handlers.onClose(); return p; } },
+  { label: 'перетворювач кинув', expected: { kind: 'error', code: 'internal' }, closes: 1,
+    play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ boom: true }); return p; } },
+  { label: 'скасування під час збору', expected: { kind: 'error', code: 'internal' }, closes: 1,
+    play: (s) => {
+      const controller = new AbortController();
+      const p = run(s, { signal: controller.signal });
+      s.handlers.onOpen();
+      s.send({ id: 'A', t: AT, p: 'P' });
+      controller.abort();
+      return p;
+    } },
+  { label: 'скасовано до старту', expected: { kind: 'error', code: 'internal' }, closes: 0,
+    play: (s) => run(s, { signal: AbortSignal.abort() }) },
+];
+
+for (const ending of ENDINGS) {
+  test(`після результату «${ending.label}» з'єднань і відкладених дій немає, пізні події нічого не змінюють`, async () => {
+    const s = stand();
+    const result = await ending.play(s);
+
+    expect(result).toMatchObject(ending.expected);
+    // Помилка не несе набору: зібране до неї не видається за результат.
+    if (result.kind === 'error') expect(result).not.toHaveProperty('items');
+    expect(s.closes).toBe(ending.closes);
+    expect(s.liveTimers).toBe(0);
+
+    if (s.connected) {
+      s.send({ id: 'Z', t: AT, p: 'P' });
+      s.handlers.onError();
+      s.handlers.onClose();
+    }
+    s.fireTimers();
+
+    expect(s.closes).toBe(ending.closes);
+    expect(s.liveTimers).toBe(0);
+  });
+}

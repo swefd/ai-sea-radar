@@ -85,3 +85,82 @@ test('ключ не потрапляє у відповідь', async () => {
   const response = await harness((h) => { h.onOpen(); h.onError(); })();
   expect(await response.text()).not.toContain(ENV.AISSTREAM_API_KEY);
 });
+
+// Годинник, що КРОКУЄ: harness вище тримає `now` нерухомим, тож не відрізнив
+// би «час завершення» від «часу старту» (SPRINT-03:57). Тут старт — 12:00:00,
+// і тест сам пересуває годинник до моменту завершення. `toItem` дає судно з
+// id із повідомлення — щоб 100 різних суден справді були різними.
+function clockHarness() {
+  let clock = NOW;
+  const timers: Array<() => void> = [];
+  let handlers: SocketHandlers | null = null;
+  const connect: Connect = (h) => { handlers = h; return { send: () => {}, close: () => {} }; };
+  const handler = createSnapshotHandler({
+    toItem: (raw) => {
+      const id = (raw as { id?: unknown }).id;
+      return typeof id === 'string' ? { ...VESSEL, id } : null;
+    },
+    connect,
+    now: () => clock,
+    env: ENV,
+    setTimer: (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; },
+    clearTimer: () => {},
+  });
+  return {
+    // `collect` викликається синхронно (snapshot.ts:78), тож після start()
+    // обробники сокета вже на місці.
+    start: () => handler(new Request('http://127.0.0.1:3000/api/snapshot')),
+    get handlers() {
+      if (handlers === null) throw new Error('connect ще не викликано');
+      return handlers;
+    },
+    advance: (ms: number) => { clock += ms; },
+    fireTimers: () => { for (const fn of timers) fn(); },
+  };
+}
+
+test('collectedAt — час годинника в момент завершення, а не старту', async () => {
+  const h = clockHarness();
+  const pending = h.start();
+  h.handlers.onOpen();
+  h.advance(15_000);
+  h.fireTimers();
+  expect(await (await pending).json()).toMatchObject({
+    ok: true,
+    collectedAt: '2026-01-01T12:00:15.000Z',
+    reason: 'window_elapsed',
+  });
+});
+
+test('attemptedAt помилки — час годинника в момент розриву', async () => {
+  const h = clockHarness();
+  const pending = h.start();
+  h.handlers.onOpen();
+  h.advance(4_000);
+  h.handlers.onClose();
+  expect(await (await pending).json()).toEqual({
+    ok: false,
+    attemptedAt: '2026-01-01T12:00:04.000Z',
+    error: { code: 'disconnected', message: "З'єднання з джерелом розірвано" },
+  });
+});
+
+test('100 унікальних суден: limit_reached, truncated true, count 100, 101-го немає', async () => {
+  const h = clockHarness();
+  const pending = h.start();
+  h.handlers.onOpen();
+  for (let i = 1; i <= 101; i += 1) h.handlers.onMessage(JSON.stringify({ id: `V${i}` }));
+  const response = await pending;
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { vessels: Array<{ id: string }> };
+  expect(body).toMatchObject({
+    ok: true,
+    count: 100,
+    truncated: true,
+    reason: 'limit_reached',
+    windowSeconds: 15,
+    collectedAt: '2026-01-01T12:00:00.000Z',
+  });
+  expect(body.vessels).toHaveLength(100);
+  expect(body.vessels.some((v) => v.id === 'V101')).toBe(false);
+});
