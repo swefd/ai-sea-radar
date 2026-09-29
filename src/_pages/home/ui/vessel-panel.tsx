@@ -18,14 +18,26 @@
 
 import { useState } from 'react';
 
-import { SOURCE_LABELS, type Vessel } from '@/entities/vessel';
+import type { Vessel } from '@/entities/vessel';
 import { VesselCard } from '@/entities/vessel/ui/vessel-card';
 
 import styles from './vessel-panel.module.css';
 
+// Панель нічого не вирішує про дані: підпис, пояснення й стан кнопки приходять
+// готовими від `VesselView`, єдиного власника стану спроби. Тут лише розкладка
+// й власний стан згортання.
 interface VesselPanelProps {
   readonly vessel: Vessel | null;
+  /** Що зараз на карті — підпис стану, SPRINT-02:30…:35. */
+  readonly caption: string;
+  /** Пояснення для порожнього успіху й помилки; `null` — пояснювати нічого. */
+  readonly notice: string | null;
+  /** Триває збір: кнопка заблокована, удруге натиснути не можна (SPRINT-02:11). */
+  readonly loading: boolean;
+  readonly onLoad: () => void;
 }
+
+const LOAD_BUTTON_LABEL = 'Завантажити справжні позиції';
 
 /**
  * Шеврон. Інлайновий SVG, а не символ шрифту: гліф залежав би від того, що
@@ -53,13 +65,11 @@ function ChevronIcon({ pointsUp }: { readonly pointsUp: boolean }) {
   );
 }
 
-// Порядок згори вниз зафіксований у ТЗ: кнопка, підпис джерела, картка. Перше
-// місце цього тижня порожнє, і саме порожнє: заглушка була б кодом, якого ніхто
-// не замовляв, а порядок вона тримає й так.
+// Порядок згори вниз зафіксований у ТЗ: кнопка, підпис джерела, картка.
 //
-// Кнопка згортання того місця НЕ ЗАЙМАЄ і зайняти не може: вона живе в шапці
-// панелі, поруч із підписом джерела, тобто поза колонкою вмісту, де стоятиме
-// «Завантажити справжні позиції» з B-13.
+// Кнопка згортання місця кнопки завантаження НЕ ЗАЙМАЄ: вона живе в шапці
+// панелі, поруч із підписом, а «Завантажити справжні позиції» стоїть окремим
+// рядком НАД шапкою (рішення плану SPRINT-03 «Panel order»).
 //
 // ЩО ТРИМАЄ РОЗМІТКА НИЖЧЕ, згори вниз:
 //
@@ -67,24 +77,40 @@ function ChevronIcon({ pointsUp }: { readonly pointsUp: boolean }) {
 // може: `backdrop-filter` розмиває те, що ПОЗАДУ елемента, і градієнт самої
 // панелі він не зачепив би.
 //
-// `.source` — підпис джерела, видимий ЗАВЖДИ, у тому числі згорнутою панеллю.
+// `.actions` — кнопка завантаження. Поза `.body`, тож видима й згорнутою
+// панеллю: єдина дія застосунку не має ховатися за іншою кнопкою. `disabled`
+// у `loading` — це і є «удруге натиснути не можна» з SPRINT-02:11.
+//
+// `.source` — підпис стану, видимий ЗАВЖДИ, у тому числі згорнутою панеллю.
 // US-06 вимагає, щоб на екрані було написано, які саме дані показано, тому
 // згортання ховає вміст, а не панель цілком: інакше вимога зникала б разом
 // із нею.
+//
+// `.notice` — пояснення порожнього успіху чи помилки, `role="status"`, щоб
+// читач екрана оголосив результат спроби, якої людина чекала. Стоїть одразу
+// під шапкою й поза `.body` з тієї ж причини, що й підпис: без нього
+// «суден: 0» і «Даних на карті немає» лишилися б без причини. Рендериться
+// лише коли є що сказати — порожній вузол зі статусом був би шумом.
 //
 // `.body` — вміст, що лишається в DOM і згорнутою панеллю; ховає його CSS.
 // Умовний рендер скидав би позицію прокручування картки на кожне згортання, а
 // доказу більше не давав би: `inert` знімає вміст і з фокуса, і з дерева
 // доступності, тобто з погляду клавіатури та читача екрана його немає.
-export function VesselPanel({ vessel }: VesselPanelProps) {
+export function VesselPanel({ vessel, caption, notice, loading, onLoad }: VesselPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
     <aside className={`${styles.panel} ${collapsed ? styles.collapsed : ''}`}>
       <div className={styles.aurora} aria-hidden="true" />
 
+      <div className={styles.actions}>
+        <button type="button" className={styles.load} onClick={onLoad} disabled={loading}>
+          {LOAD_BUTTON_LABEL}
+        </button>
+      </div>
+
       <div className={styles.header}>
-        <p className={styles.source}>{SOURCE_LABELS.demo}</p>
+        <p className={styles.source}>{caption}</p>
 
         <button
           type="button"
@@ -98,8 +124,13 @@ export function VesselPanel({ vessel }: VesselPanelProps) {
         </button>
       </div>
 
+      {notice !== null && (
+        <p className={styles.notice} role="status">
+          {notice}
+        </p>
+      )}
+
       <div className={styles.body} id="vessel-panel-body" inert={collapsed}>
-        {/* місце під кнопку */}
         {vessel !== null && <VesselCard vessel={vessel} />}
       </div>
     </aside>

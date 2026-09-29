@@ -23,6 +23,13 @@ export interface LeafletMapProps {
   readonly vessels: readonly Vessel[];
   readonly selectedVesselId: string | null;
   readonly onSelectVessel: (vesselId: string) => void;
+  /**
+   * Лічильник «поверни карту до початкового виду». Число, а не колбек чи
+   * прапорець: власник стану лише збільшує його, а карта реагує на ЗМІНУ —
+   * так команда не може ні загубитися, ні спрацювати двічі від ререндера.
+   * Перше значення команди не несе: початковий вид карта ставить сама.
+   */
+  readonly resetViewKey: number;
 }
 
 // Реєстр тримає і маркер, і наш дочірній вузол значка: корінь маркера належить
@@ -36,11 +43,13 @@ export function LeafletMap({
   vessels,
   selectedVesselId,
   onSelectVessel,
+  resetViewKey,
 }: LeafletMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const registryRef = useRef<Map<string, VesselMarker>>(new Map());
   const onSelectVesselRef = useRef(onSelectVessel);
+  const resetViewKeyRef = useRef(resetViewKey);
 
   // Колбек живе в ref, щоб його ідентичність не потрапила в залежності ефекту
   // маркерів: інакше кожен ререндер батька перебудовував би весь реєстр.
@@ -125,6 +134,22 @@ export function LeafletMap({
     // з ефекту вище, і питання про порядок прибирання двох ефектів одного
     // компонента цим знімається, а не вирішується.
   }, [vessels, selectedVesselId]);
+
+  // Повернення до початкового виду при першому непорожньому знімку
+  // (SPRINT-02:33). Попереднє значення лежить у ref і порівнюється тут, а не в
+  // рендері: запис у ref під час рендера — порушення правил React Compiler, а
+  // в ефекті він законний. Ефект стоїть ПІСЛЯ ефекту маркерів, тож на тому
+  // самому коміті вид міняється вже над новим набором.
+  useEffect(() => {
+    if (resetViewKeyRef.current === resetViewKey) {
+      return;
+    }
+    resetViewKeyRef.current = resetViewKey;
+    mapRef.current?.setView(
+      [INITIAL_VIEW.center.lat, INITIAL_VIEW.center.lon],
+      INITIAL_VIEW.zoom,
+    );
+  }, [resetViewKey]);
 
   return <div ref={containerRef} className={styles.map} />;
 }
