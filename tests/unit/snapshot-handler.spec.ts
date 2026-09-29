@@ -165,3 +165,34 @@ test('100 унікальних суден: limit_reached, truncated true, count 
   expect(body.vessels).toHaveLength(100);
   expect(body.vessels.some((v) => v.id === 'V101')).toBe(false);
 });
+
+test('скасування запиту: сокет закрито, таймер знято, успіху немає', async () => {
+  let handlers: SocketHandlers | null = null;
+  let closes = 0;
+  let cleared = 0;
+  const connect: Connect = (h) => { handlers = h; return { send: () => {}, close: () => { closes += 1; } }; };
+  const handler = createSnapshotHandler({
+    toItem: (raw) => ((raw as { v?: boolean }).v === true ? VESSEL : null),
+    connect,
+    now: () => NOW,
+    env: ENV,
+    setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
+    clearTimer: () => { cleared += 1; },
+  });
+  const controller = new AbortController();
+  const pending = handler(new Request('http://127.0.0.1:3000/api/snapshot', { signal: controller.signal }));
+  if (handlers === null) throw new Error('connect ще не викликано');
+  const h: SocketHandlers = handlers;
+  h.onOpen();
+  h.onMessage('{"v":true}');
+  controller.abort();
+  const response = await pending;
+  expect(response.status).toBe(502);
+  expect(await response.json()).toEqual({
+    ok: false,
+    attemptedAt: '2026-01-01T12:00:00.000Z',
+    error: { code: 'internal', message: 'Внутрішня помилка сервера' },
+  });
+  expect(closes).toBe(1);
+  expect(cleared).toBe(1);
+});

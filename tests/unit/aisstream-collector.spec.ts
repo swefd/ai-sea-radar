@@ -358,7 +358,8 @@ test('connect, що смикає onOpen синхронно, — підписка
 
 // SPRINT-03:58 — «після БУДЬ-ЯКОГО результату спроба не лишає відкритих
 // з'єднань і відкладених дій». Окремі тести вище перевіряють це вибірково;
-// тут — кожна гілка `settle` у collector.ts, по одному рядку на гілку.
+// тут — кожна гілка `settle` у collector.ts, по одному рядку на гілку, і
+// закриття сокета, коли результат склався ще всередині `connect`.
 // Очікуване `closes` — літерал: 0 там, де з'єднання так і не з'явилося.
 // Після результату в стенд подаються пізні події — вони не мають ні
 // відкрити/закрити щось удруге, ні поставити таймер.
@@ -398,6 +399,8 @@ const ENDINGS: ReadonlyArray<{
     play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.handlers.onError(); s.handlers.onClose(); return p; } },
   { label: 'розрив після судна', expected: { kind: 'error', code: 'disconnected' }, closes: 1,
     play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.handlers.onClose(); return p; } },
+  { label: 'результат склався всередині connect: сокет закрито після повернення handle', expected: { kind: 'error', code: 'connect_failed' }, closes: 1,
+    play: (s) => run(s, { connect: (h) => { const handle = s.connect(h); h.onError(); return handle; } }) },
   { label: 'перетворювач кинув', expected: { kind: 'error', code: 'internal' }, closes: 1,
     play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ boom: true }); return p; } },
   { label: 'скасування під час збору', expected: { kind: 'error', code: 'internal' }, closes: 1,
