@@ -69,7 +69,7 @@ test('без ключа: HTTP 502, no_api_key, текст дослівно', asy
 
 for (const [label, drive, code, message] of [
   ['помилка до відкриття', (h: SocketHandlers) => h.onError(), 'connect_failed', 'Не вдалося підключитися до джерела'],
-  ['помилка після відкриття', (h: SocketHandlers) => { h.onOpen(); h.onError(); }, 'provider_error', 'Джерело повернуло помилку'],
+  ['обрив після підписки (error, потім close)', (h: SocketHandlers) => { h.onOpen(); h.onError(); h.onClose(); }, 'disconnected', "З'єднання з джерелом розірвано"],
   ['розрив після підписки', (h: SocketHandlers) => { h.onOpen(); h.onClose(); }, 'disconnected', "З'єднання з джерелом розірвано"],
   ['помилка провайдера кадром', (h: SocketHandlers) => { h.onOpen(); h.onMessage('{"error":"Api Key Is Not Valid"}'); }, 'provider_error', 'Джерело повернуло помилку'],
 ] as const) {
@@ -83,7 +83,7 @@ for (const [label, drive, code, message] of [
 }
 
 test('ключ не потрапляє у відповідь', async () => {
-  const response = await harness((h) => { h.onOpen(); h.onError(); })();
+  const response = await harness((h) => { h.onOpen(); h.onClose(); })();
   expect(await response.text()).not.toContain(ENV.AISSTREAM_API_KEY);
 });
 

@@ -255,6 +255,31 @@ test('розрив після трьох валідних → disconnected, бе
   expectReleased(s);
 });
 
+test('обрив після підписки як його дає Node: error, потім close → disconnected, без часткового набору', async () => {
+  const s = stand();
+  const promise = run(s);
+  s.handlers.onOpen();
+  for (const id of ['A', 'B', 'C']) s.send({ id, t: '2026-01-01T12:00:00Z', p: 'P' });
+  s.handlers.onError();
+  s.handlers.onClose();
+  expect(await promise).toEqual({ kind: 'error', code: 'disconnected', finishedAt: 1767268800000 });
+  expectReleased(s);
+});
+
+test('помилка сокета після відкриття сама результату не дає: без close збір іде до кінця вікна', async () => {
+  const s = stand();
+  let finished = false;
+  const promise = run(s).then((r) => { finished = true; return r; });
+  s.handlers.onOpen();
+  s.handlers.onError();
+  await Promise.resolve();
+  expect(finished).toBe(false);
+  expect(s.liveTimers).toBe(1);
+  s.fireTimers();
+  const result = await promise;
+  expect(result.kind === 'done' ? result.reason : null).toBe('window_elapsed');
+});
+
 test('закриття до підписки → connect_failed', async () => {
   const s = stand();
   const promise = run(s);
@@ -314,7 +339,7 @@ test('ключ не тече в результат', async () => {
   const s = stand();
   const promise = run(s);
   s.handlers.onOpen();
-  s.handlers.onError();
+  s.handlers.onClose();
   expect(JSON.stringify(await promise)).not.toContain(KEY);
   expect(s.sent.join('')).toContain(KEY);
 });
@@ -369,6 +394,8 @@ const ENDINGS: ReadonlyArray<{
     play: (s) => run(s, { connect: () => { throw new Error('dns'); } }) },
   { label: 'помилка провайдера після судна', expected: { kind: 'error', code: 'provider_error' }, closes: 1,
     play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.send({ error: 'Api Key Is Not Valid' }); return p; } },
+  { label: 'обрив після судна (error, потім close)', expected: { kind: 'error', code: 'disconnected' }, closes: 1,
+    play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.handlers.onError(); s.handlers.onClose(); return p; } },
   { label: 'розрив після судна', expected: { kind: 'error', code: 'disconnected' }, closes: 1,
     play: (s) => { const p = run(s); s.handlers.onOpen(); s.send({ id: 'A', t: AT, p: 'P' }); s.handlers.onClose(); return p; } },
   { label: 'перетворювач кинув', expected: { kind: 'error', code: 'internal' }, closes: 1,

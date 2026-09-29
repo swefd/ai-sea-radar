@@ -187,12 +187,15 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
         },
 
         // До відкриття — не дійшли до джерела: `connect_failed` негайно
-        // (SPRINT-02:29). Після — джерело відповіло помилкою. У жодному разі
-        // вже зібране не повертається (SPRINT-02:92, третя пастка).
-        onError: () => settle({
-          kind: 'error',
-          code: opened ? 'provider_error' : 'connect_failed',
-        }),
+        // (SPRINT-02:29). ПІСЛЯ відкриття подія `error` — збій транспорту, і
+        // WebSocket за нею завжди шле `close` (виміряно на Node 24.21:
+        // обрив TCP дає `error → close(1006)`). Класифікує саме `onClose`:
+        // інакше обрив після підписки читався б як «джерело повернуло
+        // помилку», а не «з'єднання розірвано» (F1, B-17). Якщо `close` не
+        // прийде, завершить таймер вікна.
+        onError: () => {
+          if (!opened) settle({ kind: 'error', code: 'connect_failed' });
+        },
 
         // Закриття ДО підписки — не дійшли; ПІСЛЯ — розірвали. Дослівно :29.
         onClose: () => settle({
