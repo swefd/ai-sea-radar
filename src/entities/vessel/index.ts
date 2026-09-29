@@ -47,3 +47,5 @@ export {
 
 export type { VesselIconState } from './lib/vessel-icon-state';
 export { vesselIconState } from './lib/vessel-icon-state';
+
+export { parseAisTimeUtc, vesselFromPositionReport } from './lib/position-report';
