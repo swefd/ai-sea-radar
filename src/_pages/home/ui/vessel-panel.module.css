@@ -190,7 +190,7 @@
     opacity 160ms ease;
 }
 
-.load:hover:not(:disabled) {
+.load:hover {
   background: rgba(62, 230, 196, 0.18);
 }
 
@@ -200,13 +200,21 @@
   outline-offset: 2px;
 }
 
-/* Заблокована під час збору. Вигляд — приглушений, а не прихований: людина
- * має бачити, що дія є, але зараз недоступна (SPRINT-02:11). */
-.load:disabled {
-  border-color: var(--edge);
-  background: rgba(232, 236, 248, 0.04);
-  color: var(--dim);
-  cursor: progress;
+/* Під час збору та сама кнопка — «Скасувати» (специфікація 2026-09-29 §5.1).
+ * Колір `--locked`, а не `--contact`: це інша дія, і сплутати її з
+ * завантаженням не можна, хоч місце й розмір ті самі. */
+.cancel {
+  border-color: rgba(255, 95, 210, 0.42);
+  background: transparent;
+  color: var(--locked);
+}
+
+.cancel:hover {
+  background: rgba(255, 95, 210, 0.12);
+}
+
+.cancel:focus-visible {
+  outline-color: var(--locked);
 }
 
 /* Пояснення результату спроби — під шапкою, поза `.body`. Нижній відступ є

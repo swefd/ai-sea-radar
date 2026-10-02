@@ -50,17 +50,23 @@ const LAST_TICK = lastFleetTick(DEMO_ROUTES);
  * «Дбайливо» зберегти попередній набір після помилки тут неможливо формою
  * типу, а не домовленістю: SPRINT-02:91 прямо називає це поверненням на
  * доопрацювання.
+ *
+ * `cancelled` — людина сама обірвала спробу; суден немає, як і в `error`, але
+ * це не помилка (специфікація 2026-09-29 §5.2).
  */
 type LoadState =
   | { kind: 'idle-demo' }
   | { kind: 'loading' }
   | { kind: 'success'; response: SnapshotSuccess }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  | { kind: 'cancelled' };
 
 // Тексти станів — дослівно з SPRINT-02:31…:35.
 const LOADING_CAPTION = 'Завантаження…';
 const NO_DATA_CAPTION = 'Даних на карті немає';
 const EMPTY_NOTICE = 'За час збору позицій не отримано';
+// Специфікація 2026-09-29 §5.2.
+const CANCELLED_NOTICE = 'Завантаження скасовано';
 
 /** Порожній набір — модульна стала, щоб його ідентичність не мінялася з рендером
  * і ефект маркерів не перезапускався без причини. */
@@ -80,6 +86,8 @@ function describe(load: LoadState): { caption: string; notice: string | null } {
       };
     case 'error':
       return { caption: NO_DATA_CAPTION, notice: `Не вдалося отримати дані: ${load.message}` };
+    case 'cancelled':
+      return { caption: NO_DATA_CAPTION, notice: CANCELLED_NOTICE };
   }
 }
 
@@ -92,6 +100,15 @@ export function VesselView() {
   // стан: він нічого не рендерить, і читається лише в обробнику, не в рендері.
   const [resetViewKey, setResetViewKey] = useState(0);
   const hadNonEmptySuccessRef = useRef(false);
+
+  // Контролер ПОТОЧНОЇ спроби. Ref, а не стан: він нічого не рендерить. Він же
+  // — ознака «чия це відповідь»: спроба, чий контролер уже не поточний
+  // (скасовано або розмонтовано), свій результат не записує.
+  const attemptRef = useRef<AbortController | null>(null);
+
+  // Розмонтування (hot reload, закриття) обриває запит: інакше сервер тримав
+  // би сокет до кінця вікна — а воно тепер буває й 5 хвилин.
+  useEffect(() => () => attemptRef.current?.abort(), []);
 
   // ЄДИНА ЗАКОННА ФОРМА моменту старту, і це виміряно проти справжнього конфігу
   // цього репозиторію, а не обрано на смак: `eslint-plugin-react-hooks@7.1.1`
@@ -165,15 +182,20 @@ export function VesselView() {
   //
   // Вибір скидається ДО запиту: у `loading` суден немає (SPRINT-02:31), і
   // картка, що пережила б їх, показувала б судно, якого на карті нема. Повторне
-  // натискання під час збору неможливе — кнопка `disabled` у `loading`, і це
-  // єдиний захист: другого запиту обробник не очікує.
+  // натискання під час збору неможливе — у `loading` кнопки завантаження немає,
+  // на її місці «Скасувати». Та й без цього відповідь чужої спроби не пишеться.
   async function handleLoad() {
+    const attempt = new AbortController();
+    attemptRef.current = attempt;
     setSelectedVesselId(null);
     setLoad({ kind: 'loading' });
 
-    const response = await fetchSnapshot(DEFAULT_SNAPSHOT_SETTINGS);
+    const response = await fetchSnapshot(DEFAULT_SNAPSHOT_SETTINGS, attempt.signal);
 
-    // Скасування з'явиться в Task 5; до того сигналу немає, і гілка недосяжна.
+    // Відповідь чужої спроби — ігнор. Стан уже записав той, хто її обірвав.
+    if (attemptRef.current !== attempt) return;
+    attemptRef.current = null;
+
     if (response === 'cancelled') return;
 
     if (response === null) {
@@ -194,6 +216,14 @@ export function VesselView() {
       hadNonEmptySuccessRef.current = true;
       setResetViewKey((previous) => previous + 1);
     }
+  }
+
+  // Стан пише САМ обробник, а не гілка 'cancelled' у handleLoad: відповідь
+  // обірваного запиту може й не прийти, а людина має побачити результат одразу.
+  function handleCancel() {
+    attemptRef.current?.abort();
+    attemptRef.current = null;
+    setLoad({ kind: 'cancelled' });
   }
 
   // Усе видиме — похідне від стану спроби й двох чисел. Карта й картка читають
@@ -229,6 +259,7 @@ export function VesselView() {
         notice={notice}
         loading={load.kind === 'loading'}
         onLoad={handleLoad}
+        onCancel={handleCancel}
       />
     </>
   );

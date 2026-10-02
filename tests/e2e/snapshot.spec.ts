@@ -23,6 +23,7 @@ const ERROR_NO_KEY = { ok: false, attemptedAt: '2026-01-01T12:00:00.000Z',
   error: { code: 'no_api_key', message: 'Ключ AISStream не налаштовано' } };
 
 const BUTTON = 'Завантажити справжні позиції';
+const CANCEL = 'Скасувати';
 
 function loadButton(page: Page) {
   return page.getByRole('button', { name: BUTTON });
@@ -43,9 +44,15 @@ function cardField(page: Page, label: string) {
  */
 async function open(page: Page, handler: (route: Route) => Promise<void>) {
   await blockExternal(page);
-  await page.route('**/api/snapshot', handler);
+  // Предикат за pathname, а не glob `**/api/snapshot`: glob закріплений у
+  // кінці, а клієнт тепер шле `?window=…&classB=…`.
+  await page.route((url) => url.pathname === '/api/snapshot', handler);
   await page.goto('/');
   await page.locator('[data-vessel-id]').first().waitFor();
+}
+
+function cancelButton(page: Page) {
+  return page.getByRole('button', { name: CANCEL });
 }
 
 function json(body: unknown, status: number) {
@@ -104,7 +111,10 @@ test('помилка: карта порожня, "Даних на карті н�
   await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
 });
 
-test('завантаження: кнопка заблокована, демо зупинене, вибір прибрано', async ({ page }) => {
+// R2 (SPRINT-02:31) вимагав тут заблоковану кнопку. Із 2026-10-02 та сама
+// кнопка стає «Скасувати» (специфікація 2026-09-29 §5.1, рішення власника):
+// удруге завантажити неможливо, бо кнопки завантаження в `loading` немає.
+test('завантаження: кнопка стає «Скасувати», демо зупинене, вибір прибрано', async ({ page }) => {
   // Відповідь тримається, доки тест її не відпустить: без цього стан
   // `loading` тривав би мілісекунди, і твердження про нього були б гонкою.
   let release: () => void = () => {};
@@ -122,7 +132,8 @@ test('завантаження: кнопка заблокована, демо з
 
   await loadButton(page).click();
 
-  await expect(loadButton(page)).toBeDisabled();
+  await expect(loadButton(page)).toHaveCount(0);
+  await expect(cancelButton(page)).toBeEnabled();
   await expect(page.getByText('Завантаження…', { exact: true })).toBeVisible();
   await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
   await expect(page.locator('aside dl')).toHaveCount(0);
@@ -130,6 +141,7 @@ test('завантаження: кнопка заблокована, демо з
   release();
 
   await expect(loadButton(page)).toBeEnabled();
+  await expect(cancelButton(page)).toHaveCount(0);
   await expect(page.locator('[data-vessel-id="210385000"]')).toHaveCount(1);
 });
 
@@ -140,4 +152,68 @@ test('відповідь без тіла: помилка "Немає відпо�
   await expect(page.getByRole('status')).toHaveText('Не вдалося отримати дані: Немає відповіді сервера');
   await expect(loadButton(page)).toBeEnabled();
   await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
+});
+
+/** Відповідь, яку тест відпускає сам; `release()` чекає, доки `fulfill` відпрацює. */
+function heldRoute() {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let done: () => void = () => {};
+  const finished = new Promise<void>((resolve) => { done = resolve; });
+  const handler = async (route: Route) => {
+    await held;
+    // Запит уже обірвано — `fulfill` кидає; це очікувано, а не провал.
+    await route.fulfill({ status: 200, json: SUCCESS_ONE }).catch(() => {});
+    done();
+  };
+  return { handler, release: () => { release(); return finished; } };
+}
+
+test('«Скасувати»: запит обірвано, суден немає, "Завантаження скасовано"', async ({ page }) => {
+  const held = heldRoute();
+  await open(page, held.handler);
+
+  await loadButton(page).click();
+
+  const failed = page.waitForEvent('requestfailed', (r) => new URL(r.url()).pathname === '/api/snapshot');
+  await cancelButton(page).click();
+  await failed;
+
+  await expect(page.getByRole('status')).toHaveText('Завантаження скасовано');
+  await expect(page.getByText('Даних на карті немає', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
+  await expect(loadButton(page)).toBeEnabled();
+  await expect(cancelButton(page)).toHaveCount(0);
+});
+
+test('пізня відповідь після скасування не перезаписує стан', async ({ page }) => {
+  const held = heldRoute();
+  await open(page, held.handler);
+
+  await loadButton(page).click();
+  await cancelButton(page).click();
+  await expect(page.getByRole('status')).toHaveText('Завантаження скасовано');
+
+  await held.release();
+
+  await expect(page.getByRole('status')).toHaveText('Завантаження скасовано');
+  await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
+});
+
+test('подвійний клік по «Завантажити» не скасовує власну спробу', async ({ page }) => {
+  // Кнопка одна: другий клік подвійного кліку влучає вже в «Скасувати».
+  const held = heldRoute();
+  await open(page, held.handler);
+
+  await loadButton(page).dblclick();
+  await expect(cancelButton(page)).toBeVisible();
+  await expect(page.getByText('Завантаження…', { exact: true })).toBeVisible();
+
+  await held.release();
+  await expect(page.locator('[data-vessel-id="210385000"]')).toHaveCount(1);
+});
+
+test('«Скасувати» видно лише під час завантаження', async ({ page }) => {
+  await open(page, json(SUCCESS_ONE, 200));
+  await expect(cancelButton(page)).toHaveCount(0);
 });
