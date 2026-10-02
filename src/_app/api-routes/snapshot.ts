@@ -100,6 +100,7 @@ export function createSnapshotHandler(
         apiKey: key.apiKey,
         windowMs: settings.windowSeconds * 1000,
         limit: SNAPSHOT_VESSEL_LIMIT,
+        includeClassB: settings.includeClassB,
         toItem,
         now,
         setTimer,

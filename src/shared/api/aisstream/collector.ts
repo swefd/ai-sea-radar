@@ -25,6 +25,8 @@ export type CollectOptions<T extends Collectable> = {
   apiKey: string;
   windowMs: number;
   limit: number;
+  /** Передається в підписку як є. */
+  includeClassB?: boolean;
   /**
    * Перетворювач — ПАРАМЕТР: shared/ не імпортує entities/. `null` — «не валідна
    * позиція»; збирач такі пропускає й рахує відкинутими. SubscriptionConfirmation
@@ -71,7 +73,7 @@ function isProviderError(raw: unknown): boolean {
 }
 
 export function collect<T extends Collectable>(options: CollectOptions<T>): Promise<CollectResult<T>> {
-  const { connect, apiKey, windowMs, limit, toItem, now, setTimer, clearTimer, signal } = options;
+  const { connect, apiKey, windowMs, limit, includeClassB, toItem, now, setTimer, clearTimer, signal } = options;
 
   return new Promise<CollectResult<T>>((resolve) => {
     // ЄДИНИЙ сторож на всі шляхи виходу — пастка SPRINT-02:92 «проміс
@@ -132,7 +134,7 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
     const subscribe = () => {
       if (subscribed || handle === null) return;
       try {
-        handle.send(buildSubscription(apiKey));
+        handle.send(buildSubscription(apiKey, { includeClassB }));
         subscribed = true;
       } catch {
         settle({ kind: 'error', code: 'connect_failed' });

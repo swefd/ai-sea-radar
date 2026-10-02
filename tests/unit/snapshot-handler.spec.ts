@@ -20,7 +20,12 @@ function harness(drive: (h: SocketHandlers) => void, query = '') {
   const timerMs: number[] = [];
   let handlers: SocketHandlers | null = null;
   let connects = 0;
-  const connect: Connect = (h) => { connects += 1; handlers = h; return { send: () => {}, close: () => {} }; };
+  const sent: string[] = [];
+  const connect: Connect = (h) => {
+    connects += 1;
+    handlers = h;
+    return { send: (text) => { sent.push(text); }, close: () => {} };
+  };
   const handler = createSnapshotHandler({
     toItem: (raw) => ((raw as { v?: boolean }).v === true ? VESSEL : null),
     connect,
@@ -36,7 +41,7 @@ function harness(drive: (h: SocketHandlers) => void, query = '') {
     for (const fn of timers) fn();
     return pending;
   };
-  return Object.assign(run, { get connects() { return connects; }, timerMs });
+  return Object.assign(run, { get connects() { return connects; }, timerMs, sent });
 }
 
 test('успіх: HTTP 200 і фінальна форма з метаданими', async () => {
@@ -60,6 +65,13 @@ test('window=120&classB=1: вікно 120 000 мс у таймері, у від�
   const response = await run();
   expect(run.timerMs).toEqual([120_000]);
   expect(await response.json()).toMatchObject({ ok: true, windowSeconds: 120, includeClassB: true });
+});
+
+test('classB=1 доходить до підписки', async () => {
+  const run = harness((h) => { h.onOpen(); }, '?classB=1');
+  await run();
+  const subscription = JSON.parse(run.sent[0]) as { FilterMessageTypes: string[] };
+  expect(subscription.FilterMessageTypes).toEqual(['PositionReport', 'StandardClassBPositionReport']);
 });
 
 test('некоректні параметри: HTTP 400, invalid_params, мережі не торкалися', async () => {
