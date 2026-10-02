@@ -249,6 +249,28 @@ test('помилка при демонстрації: судна рухають�
   await expect(cardField(page, 'Координати')).not.toHaveText(before ?? '');
 });
 
+test('очікування при демонстрації: демо рухається, поки запит триває', async ({ page }) => {
+  // CR :26 — саме ОЧІКУВАННЯ, не наслідок відповіді: рух перевіряється, поки
+  // рядок ще «Завантаження…», а відповідь притримана.
+  const pending = held(ERROR_NO_KEY, 502);
+  await open(page, [pending.handler], { clock: true });
+
+  await page.locator('[data-vessel-id="demo-3"]').click();
+  await loadButton(page).click();
+  await expect(attemptLine(page)).toHaveText('Завантаження…');
+
+  const before = await cardField(page, 'Координати').textContent();
+  expect(before).not.toBeNull();
+  await page.clock.runFor(4_000);
+  await expect(cardField(page, 'Координати')).not.toHaveText(before!);
+  await expect(attemptLine(page)).toHaveText('Завантаження…');
+
+  pending.release();
+  await expect(attemptLine(page)).toHaveText(
+    'Спроба 12:00:00 UTC: не вдалося отримати дані: Ключ AISStream не налаштовано',
+  );
+});
+
 test('порожній успіх при демонстрації: демо рухається далі, підпис не змінюється', async ({ page }) => {
   await open(page, [json(EMPTY_LATER, 200)], { clock: true });
 
