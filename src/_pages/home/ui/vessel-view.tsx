@@ -8,9 +8,10 @@ import {
   SOURCE_LABELS,
   fleetAtTick,
   lastFleetTick,
+  type SnapshotDiagnostics,
   type Vessel,
 } from '@/entities/vessel';
-import { DEFAULT_SNAPSHOT_SETTINGS } from '@/shared/config';
+import { DEFAULT_SNAPSHOT_SETTINGS, type SnapshotSettings } from '@/shared/config';
 
 import { fetchSnapshot } from '../lib/fetch-snapshot';
 import {
@@ -18,6 +19,7 @@ import {
   snapshotCaption,
   type SnapshotSuccess,
 } from '../lib/snapshot-caption';
+import { diagnosticsLine } from '../lib/snapshot-details';
 import { DoverStraitMap } from './dover-strait-map';
 import { VesselPanel } from './vessel-panel';
 
@@ -58,7 +60,7 @@ type LoadState =
   | { kind: 'idle-demo' }
   | { kind: 'loading' }
   | { kind: 'success'; response: SnapshotSuccess }
-  | { kind: 'error'; message: string }
+  | { kind: 'error'; message: string; diagnostics: SnapshotDiagnostics | null }
   | { kind: 'cancelled' };
 
 // Тексти станів — дослівно з SPRINT-02:31…:35.
@@ -72,28 +74,45 @@ const CANCELLED_NOTICE = 'Завантаження скасовано';
  * і ефект маркерів не перезапускався без причини. */
 const NO_VESSELS: readonly Vessel[] = [];
 
-/** Підпис і пояснення — чисте похідне від стану, без жодного `useState`. */
-function describe(load: LoadState): { caption: string; notice: string | null } {
+/**
+ * Підпис, пояснення й рядок «Докладно» — чисте похідне від стану, без жодного
+ * `useState`. Рядок діагностики помилки — лише коли з'єднання відкрилося
+ * (специфікація 2026-09-29 §5.4): рядок із самих нулів нічого не пояснює.
+ */
+function describe(load: LoadState): { caption: string; notice: string | null; details: string | null } {
   switch (load.kind) {
     case 'idle-demo':
-      return { caption: SOURCE_LABELS.demo, notice: null };
+      return { caption: SOURCE_LABELS.demo, notice: null, details: null };
     case 'loading':
-      return { caption: LOADING_CAPTION, notice: null };
+      return { caption: LOADING_CAPTION, notice: null, details: null };
     case 'success':
       return {
         caption: snapshotCaption(load.response),
         notice: load.response.count === 0 ? EMPTY_NOTICE : null,
+        details: load.response.diagnostics
+          ? diagnosticsLine(load.response.diagnostics, load.response.count)
+          : null,
       };
     case 'error':
-      return { caption: NO_DATA_CAPTION, notice: `Не вдалося отримати дані: ${load.message}` };
+      return {
+        caption: NO_DATA_CAPTION,
+        notice: `Не вдалося отримати дані: ${load.message}`,
+        details: load.diagnostics && load.diagnostics.connectMs !== null
+          ? diagnosticsLine(load.diagnostics, null)
+          : null,
+      };
     case 'cancelled':
-      return { caption: NO_DATA_CAPTION, notice: CANCELLED_NOTICE };
+      return { caption: NO_DATA_CAPTION, notice: CANCELLED_NOTICE, details: null };
   }
 }
 
 export function VesselView() {
   const [selectedVesselId, setSelectedVesselId] = useState<string | null>(null);
   const [load, setLoad] = useState<LoadState>({ kind: 'idle-demo' });
+
+  // Налаштування наступної спроби. Лише стан компонента: між запусками не
+  // зберігаються (PROJECT_BRIEF:113), після оновлення — знову типові.
+  const [settings, setSettings] = useState<SnapshotSettings>(DEFAULT_SNAPSHOT_SETTINGS);
 
   // Команда карті «до початкового виду» — лічильник, а не прапорець (див.
   // `LeafletMapProps.resetViewKey`). Чи був уже непорожній успіх — ref, а не
@@ -190,7 +209,7 @@ export function VesselView() {
     setSelectedVesselId(null);
     setLoad({ kind: 'loading' });
 
-    const response = await fetchSnapshot(DEFAULT_SNAPSHOT_SETTINGS, attempt.signal);
+    const response = await fetchSnapshot(settings, attempt.signal);
 
     // Відповідь чужої спроби — ігнор. Стан уже записав той, хто її обірвав.
     if (attemptRef.current !== attempt) return;
@@ -199,11 +218,12 @@ export function VesselView() {
     if (response === 'cancelled') return;
 
     if (response === null) {
-      setLoad({ kind: 'error', message: NO_SERVER_RESPONSE });
+      setLoad({ kind: 'error', message: NO_SERVER_RESPONSE, diagnostics: null });
       return;
     }
     if (!response.ok) {
-      setLoad({ kind: 'error', message: response.error.message });
+      // `?? null` — захист від сервера без поля (стара збірка під dev).
+      setLoad({ kind: 'error', message: response.error.message, diagnostics: response.diagnostics ?? null });
       return;
     }
 
@@ -235,7 +255,7 @@ export function VesselView() {
       : load.kind === 'success'
         ? load.response.vessels
         : NO_VESSELS;
-  const { caption, notice } = describe(load);
+  const { caption, notice, details } = describe(load);
 
   // У стані лежить тільки id, ніколи копія судна: судно застаріло б з першим
   // же тіком, а id — ні. Саме тому оновлення картки на тіку безкоштовне.
@@ -258,6 +278,9 @@ export function VesselView() {
         caption={caption}
         notice={notice}
         loading={load.kind === 'loading'}
+        settings={settings}
+        onSettingsChange={setSettings}
+        details={details}
         onLoad={handleLoad}
         onCancel={handleCancel}
       />

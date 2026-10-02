@@ -217,3 +217,70 @@ test('«Скасувати» видно лише під час завантаж�
   await open(page, json(SUCCESS_ONE, 200));
   await expect(cancelButton(page)).toHaveCount(0);
 });
+
+function snapshotRequests(page: Page) {
+  const urls: URL[] = [];
+  page.on('request', (r) => {
+    const url = new URL(r.url());
+    if (url.pathname === '/api/snapshot') urls.push(url);
+  });
+  return urls;
+}
+
+test('без дотику до налаштувань: window=15, classB=0', async ({ page }) => {
+  const urls = snapshotRequests(page);
+  await open(page, json(SUCCESS_ONE, 200));
+  await loadButton(page).click();
+  await expect(page.locator('[data-vessel-id="210385000"]')).toHaveCount(1);
+  expect(urls.map((u) => u.search)).toEqual(['?window=15&classB=0']);
+});
+
+test('повзунок на 2 хв і клас B: параметри в запиті, підпис із відповіді', async ({ page }) => {
+  const urls = snapshotRequests(page);
+  await open(page, json({ ...SUCCESS_ONE, windowSeconds: 120, includeClassB: true }, 200));
+
+  const slider = page.getByRole('slider', { name: 'Вікно збору' });
+  await slider.focus();
+  // Індекс 0 → 3 (15 → 30 → 60 → 120).
+  for (let i = 0; i < 3; i += 1) await page.keyboard.press('ArrowRight');
+  await expect(slider).toHaveAttribute('aria-valuetext', '2 хвилини');
+  await page.getByRole('checkbox', { name: 'Малі судна (клас B)' }).check();
+
+  await loadButton(page).click();
+  await expect(page.getByText(
+    'AISStream · знімок за 120 с · отримано 12:00:00 UTC · суден: 1 · вибірка неповна · із малими суднами (клас B)',
+    { exact: true },
+  )).toBeVisible();
+  expect(urls.map((u) => u.search)).toEqual(['?window=120&classB=1']);
+});
+
+test('налаштування заблоковані під час завантаження', async ({ page }) => {
+  const held = heldRoute();
+  await open(page, held.handler);
+
+  await loadButton(page).click();
+  await expect(page.getByRole('slider', { name: 'Вікно збору' })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: 'Малі судна (клас B)' })).toBeDisabled();
+  await held.release();
+  await expect(page.getByRole('slider', { name: 'Вікно збору' })).toBeEnabled();
+});
+
+test('«Докладно»: закрите за замовчуванням, розкривається кліком', async ({ page }) => {
+  await open(page, json({
+    ...SUCCESS_ONE,
+    diagnostics: { connectMs: 213, messages: 11, rejected: 0, byType: { PositionReport: 11 } },
+  }, 200));
+  await loadButton(page).click();
+
+  const line = "з'єднання: 0,2 с · повідомлень: 11 (PositionReport: 11) · відкинуто: 0 · суден: 1";
+  await expect(page.getByText(line, { exact: true })).toBeHidden();
+  await page.getByText('Докладно', { exact: true }).click();
+  await expect(page.getByText(line, { exact: true })).toBeVisible();
+});
+
+test('помилка без діагностики: «Докладно» немає', async ({ page }) => {
+  await open(page, json({ ...ERROR_NO_KEY, diagnostics: null }, 502));
+  await loadButton(page).click();
+  await expect(page.getByRole('status')).toHaveText('Не вдалося отримати дані: Ключ AISStream не налаштовано');
+  await expect(page.getByText('Докладно', { exact: true })).toHaveCount(0);
+});
