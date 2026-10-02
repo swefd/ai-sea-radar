@@ -84,6 +84,13 @@ function expectReleased(s: ReturnType<typeof stand>) {
   expect(s.liveTimers).toBe(0);
 }
 
+/** Результат без діагностики — для тестів, які перевіряють не її. */
+function strip<R extends { diagnostics?: unknown }>(result: R): Omit<R, 'diagnostics'> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { diagnostics: _ignored, ...rest } = result;
+  return rest;
+}
+
 test('підписка йде першою дією після відкриття', async () => {
   const s = stand();
   const promise = run(s);
@@ -102,7 +109,7 @@ test('два однакові повідомлення про A → один о�
   s.send({ id: 'A', t: '2026-01-01T12:00:00Z', p: 'P1' });
   s.send({ id: 'A', t: '2026-01-01T12:00:00Z', p: 'P1' });
   s.fireTimers();
-  expect(await promise).toEqual({
+  expect(strip(await promise)).toEqual({
     kind: 'done',
     items: [{ id: 'A', timestamp: '2026-01-01T12:00:00Z', p: 'P1', name: null }],
     reason: 'window_elapsed',
@@ -207,7 +214,7 @@ test('вікно при живому з\'єднанні без повідомл�
   const promise = run(s);
   s.handlers.onOpen();
   s.fireTimers();
-  expect(await promise).toEqual({ kind: 'done', items: [], reason: 'window_elapsed', finishedAt: 1767268800000 });
+  expect(strip(await promise)).toEqual({ kind: 'done', items: [], reason: 'window_elapsed', finishedAt: 1767268800000 });
   expectReleased(s);
 });
 
@@ -215,7 +222,7 @@ test('з\'єднання не відкрилося до кінця строку 
   const s = stand();
   const promise = run(s);
   s.fireTimers();
-  expect(await promise).toEqual({ kind: 'error', code: 'connect_failed', finishedAt: 1767268800000 });
+  expect(strip(await promise)).toEqual({ kind: 'error', code: 'connect_failed', finishedAt: 1767268800000 });
   expectReleased(s);
 });
 
@@ -223,7 +230,7 @@ test('помилка сокета до відкриття → connect_failed н�
   const s = stand();
   const promise = run(s);
   s.handlers.onError();
-  expect(await promise).toEqual({ kind: 'error', code: 'connect_failed', finishedAt: 1767268800000 });
+  expect(strip(await promise)).toEqual({ kind: 'error', code: 'connect_failed', finishedAt: 1767268800000 });
   expectReleased(s);
 });
 
@@ -233,7 +240,7 @@ test('помилка провайдера після трьох валідних
   s.handlers.onOpen();
   for (const id of ['A', 'B', 'C']) s.send({ id, t: '2026-01-01T12:00:00Z', p: 'P' });
   s.send({ error: 'Api Key Is Not Valid' });
-  expect(await promise).toEqual({ kind: 'error', code: 'provider_error', finishedAt: 1767268800000 });
+  expect(strip(await promise)).toEqual({ kind: 'error', code: 'provider_error', finishedAt: 1767268800000 });
   expectReleased(s);
 });
 
@@ -251,7 +258,7 @@ test('розрив після трьох валідних → disconnected, бе
   s.handlers.onOpen();
   for (const id of ['A', 'B', 'C']) s.send({ id, t: '2026-01-01T12:00:00Z', p: 'P' });
   s.handlers.onClose();
-  expect(await promise).toEqual({ kind: 'error', code: 'disconnected', finishedAt: 1767268800000 });
+  expect(strip(await promise)).toEqual({ kind: 'error', code: 'disconnected', finishedAt: 1767268800000 });
   expectReleased(s);
 });
 
@@ -262,7 +269,7 @@ test('обрив після підписки як його дає Node: error, �
   for (const id of ['A', 'B', 'C']) s.send({ id, t: '2026-01-01T12:00:00Z', p: 'P' });
   s.handlers.onError();
   s.handlers.onClose();
-  expect(await promise).toEqual({ kind: 'error', code: 'disconnected', finishedAt: 1767268800000 });
+  expect(strip(await promise)).toEqual({ kind: 'error', code: 'disconnected', finishedAt: 1767268800000 });
   expectReleased(s);
 });
 
@@ -284,7 +291,7 @@ test('закриття до підписки → connect_failed', async () => {
   const s = stand();
   const promise = run(s);
   s.handlers.onClose();
-  expect(await promise).toEqual({ kind: 'error', code: 'connect_failed', finishedAt: 1767268800000 });
+  expect(strip(await promise)).toEqual({ kind: 'error', code: 'connect_failed', finishedAt: 1767268800000 });
 });
 
 test('помилка провайдера після ліміту → лишається успіх, другого завершення немає', async () => {
@@ -309,7 +316,7 @@ test('скасування до кінця вікна → не успіх, з\'�
   s.handlers.onOpen();
   s.send({ id: 'A', t: '2026-01-01T12:00:00Z', p: 'P' });
   controller.abort();
-  expect(await promise).toEqual({ kind: 'error', code: 'internal', finishedAt: 1767268800000 });
+  expect(strip(await promise)).toEqual({ kind: 'error', code: 'internal', finishedAt: 1767268800000 });
   expectReleased(s);
 });
 
@@ -438,3 +445,71 @@ for (const ending of ENDINGS) {
     expect(s.liveTimers).toBe(0);
   });
 }
+
+test('діагностика успіху: час з\'єднання, повідомлення, відкинуті, типи', async () => {
+  const s = stand();
+  const promise = run(s);
+  s.advance(200);
+  s.handlers.onOpen();
+  // Підтвердження підписки — службове, у лічильники не йде.
+  s.send({ MessageType: 'SubscriptionConfirmation' });
+  s.send({ MessageType: 'PositionReport', id: 'A', t: '2026-01-01T12:00:00Z', p: 'P' });
+  s.send({ MessageType: 'StandardClassBPositionReport', id: 'B', t: '2026-01-01T12:00:00Z', p: 'P' });
+  s.send({ MessageType: 'PositionReport', skip: true });
+  s.handlers.onMessage('це не JSON');
+  s.fireTimers();
+  expect((await promise).diagnostics).toEqual({
+    connectMs: 200,
+    messages: 4,
+    rejected: 2,
+    byType: { PositionReport: 2, StandardClassBPositionReport: 1, other: 1 },
+  });
+});
+
+test('діагностика помилки: лічильники є, суден немає', async () => {
+  const s = stand();
+  const promise = run(s);
+  s.handlers.onOpen();
+  s.send({ MessageType: 'PositionReport', id: 'A', t: '2026-01-01T12:00:00Z', p: 'P' });
+  s.handlers.onClose();
+  expect(await promise).toEqual({
+    kind: 'error',
+    code: 'disconnected',
+    finishedAt: 1767268800000,
+    diagnostics: { connectMs: 0, messages: 1, rejected: 0, byType: { PositionReport: 1 } },
+  });
+});
+
+test('кадр помилки провайдера — повідомлення типу "other", не відкинуте', async () => {
+  const s = stand();
+  const promise = run(s);
+  s.handlers.onOpen();
+  s.send({ error: 'Api Key Is Not Valid' });
+  expect((await promise).diagnostics).toEqual({ connectMs: 0, messages: 1, rejected: 0, byType: { other: 1 } });
+});
+
+test('з\'єднання не відкрилося → connectMs null', async () => {
+  const s = stand();
+  const promise = run(s);
+  s.handlers.onError();
+  expect((await promise).diagnostics).toEqual({ connectMs: null, messages: 0, rejected: 0, byType: {} });
+});
+
+test('довільний MessageType провайдера не стає ключем — лише "other"', async () => {
+  // Ключ byType іде на екран; рядок провайдера туди не потрапляє (специфікація §3.2).
+  const s = stand();
+  const promise = run(s);
+  s.handlers.onOpen();
+  s.send({ MessageType: '<script>alert(1)</script>' });
+  s.fireTimers();
+  expect((await promise).diagnostics.byType).toEqual({ other: 1 });
+});
+
+test('повідомлення після завершення не рахуються', async () => {
+  const s = stand();
+  const promise = run(s, { limit: 1 });
+  s.handlers.onOpen();
+  s.send({ MessageType: 'PositionReport', id: 'A', t: '2026-01-01T12:00:00Z', p: 'P' });
+  s.send({ MessageType: 'PositionReport', id: 'B', t: '2026-01-01T12:00:00Z', p: 'P' });
+  expect((await promise).diagnostics.messages).toBe(1);
+});
