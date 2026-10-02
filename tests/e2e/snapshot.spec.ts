@@ -1,15 +1,22 @@
-import { test, expect, type Page, type Route } from '@playwright/test';
+import { test, expect, type Locator, type Page, type Route } from '@playwright/test';
 
 import { blockExternal } from './support/offline';
 
-// Стани інтерфейсу R2, SPRINT-02:30…:37 (B-13) і частина B-16 про стани.
-// `/api/snapshot` підмінено `page.route` літеральною відповіддю: сервер,
+// Контракт R4, CR :40…:53 (B-19): два незалежні стани — показаний набір із
+// підписом джерела і результат останньої спроби окремим рядком.
+// `/api/snapshot` підмінено `page.route` літеральними відповідями: сервер,
 // ключ і AISStream тут не беруть участі, мережа заблокована. Отже доведено
-// реакцію інтерфейсу на ФОРМУ відповіді, а не те, що справжній сервер її так
-// віддає, — це стереже юніт-тест обробника. Живий ланцюжок «MMSI → значок →
-// картка» і запуск без ключа лишаються ручною перевіркою (SPRINT-02:94).
+// реакцію інтерфейсу на ФОРМУ відповіді, а не доступність AISStream (CR :91).
 //
-// Тексти порівнюються точно — вони частина контракту (SPRINT-02:36).
+// Тексти порівнюються точно — вони частина контракту. Усі часи — літерали з
+// тіл підмінених відповідей; годинник браузера жодного тексту не дає (CR :33).
+//
+// ЩО ЗМІНИЛОСЯ ПРОТИ R2 і чому (CR :55, :83). Тести станів R2 з B-16
+// («порожній успіх: суден немає…», «помилка: карта порожня…») і три тести B-13
+// («успіх з одним судном…», «завантаження: … демо зупинене, вибір прибрано»,
+// «відповідь без тіла…») кодували правило «показуємо результат останньої
+// спроби» — лист замовника № 3 його змінив. Тест «судно без швидкості й
+// курсу» перенесено без правок.
 
 const SUCCESS_ONE = {
   ok: true, collectedAt: '2026-01-01T12:00:00.000Z', windowSeconds: 15, count: 1,
@@ -18,14 +25,50 @@ const SUCCESS_ONE = {
     courseDeg: 48.2, timestamp: '2026-01-01T11:59:56.513Z', source: 'aisstream' }],
 };
 const SUCCESS_UNKNOWN = { ...SUCCESS_ONE, vessels: [{ ...SUCCESS_ONE.vessels[0], speedKnots: null, courseDeg: null }] };
-const EMPTY = { ...SUCCESS_ONE, vessels: [], count: 0 };
 const ERROR_NO_KEY = { ok: false, attemptedAt: '2026-01-01T12:00:00.000Z',
   error: { code: 'no_api_key', message: 'Ключ AISStream не налаштовано' } };
 
+// Друга спроба — на хвилину пізніше, щоб час у рядку спроби відрізнявся від
+// часу в підписі: саме ця різниця доводить, що підпис не оновився.
+const EMPTY_LATER = { ...SUCCESS_ONE, collectedAt: '2026-01-01T12:01:00.000Z', vessels: [], count: 0 };
+const ERROR_LATER = { ok: false, attemptedAt: '2026-01-01T12:01:00.000Z',
+  error: { code: 'disconnected', message: "З'єднання з джерелом розірвано" } };
+const ERROR_LATEST = { ...ERROR_LATER, attemptedAt: '2026-01-01T12:02:00.000Z' };
+/** Те саме судно в тих самих координатах — другий непорожній успіх. */
+const SUCCESS_AGAIN = { ...SUCCESS_ONE, collectedAt: '2026-01-01T12:01:00.000Z' };
+/** Те саме судно, нова позиція й новий час повідомлення. */
+const SUCCESS_MOVED = { ...SUCCESS_AGAIN, vessels: [{ ...SUCCESS_ONE.vessels[0],
+  lat: 51.2, lon: 1.4, timestamp: '2026-01-01T12:00:58.000Z' }] };
+/** Інше судно: обраного `210385000` у цьому наборі немає. */
+const SUCCESS_OTHER = { ...SUCCESS_AGAIN, vessels: [{ ...SUCCESS_ONE.vessels[0],
+  id: '235000001', name: 'OTHER', lat: 51.05, lon: 1.6 }] };
+const SUCCESS_TRUNCATED = { ...SUCCESS_ONE, truncated: true, reason: 'limit_reached' };
+
 const BUTTON = 'Завантажити справжні позиції';
+const DEMO_CAPTION = 'Демонстраційні дані';
+const CAPTION_1200 = 'AISStream · знімок за 15 с · отримано 12:00:00 UTC · суден: 1 · вибірка неповна';
+const HINT = 'Після оновлення сторінки знову показуються демонстраційні дані';
+const REAL = '[data-vessel-id="210385000"]';
+const DEMO = '[data-vessel-id^="demo-"]';
+
+type Handler = (route: Route) => Promise<void>;
 
 function loadButton(page: Page) {
   return page.getByRole('button', { name: BUTTON });
+}
+
+/** Рядок результату спроби — єдиний `role="status"` на сторінці. */
+function attemptLine(page: Page) {
+  return page.getByRole('status');
+}
+
+/**
+ * Підпис джерела — поза картою й поза карткою: поле «Джерело» картки
+ * демо-судна має той самий текст «Демонстраційні дані», тож пошук по всій
+ * сторінці знаходив би обидва.
+ */
+function caption(page: Page, text: string) {
+  return page.locator('aside > :not(#vessel-panel-body)').getByText(text, { exact: true });
 }
 
 /** Значення поля картки за підписом — той самий прийом, що в select.spec.ts. */
@@ -36,39 +79,223 @@ function cardField(page: Page, label: string) {
     .locator('dd');
 }
 
+function card(page: Page) {
+  return page.locator('aside dl');
+}
+
+/** Незвернений корінь маркера Leaflet — його рамку пише лише `setLatLng` і вид карти. */
+function markerRoot(page: Page, selector: string) {
+  return page.locator('.leaflet-marker-icon', { has: page.locator(selector) });
+}
+
+function json(body: unknown, status: number): Handler {
+  return (route) => route.fulfill({ status, json: body });
+}
+
+/** Відповідь, яку тест відпускає сам: без цього очікування тривало б мілісекунди. */
+function held(body: unknown, status: number): { handler: Handler; release: () => void } {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    handler: async (route) => {
+      await gate;
+      await route.fulfill({ status, json: body });
+    },
+    release,
+  };
+}
+
 /**
- * Мережа заблокована, `/api/snapshot` підмінено, сторінка відкрита й демо
- * намальоване. Очікування першого значка — готовність, а не перевірка: карта
- * вантажиться окремим чанком `ssr: false`.
+ * Мережа заблокована, `/api/snapshot` віддає відповіді з черги — N-те
+ * натискання отримує N-ту. Зайвий запит скасовується: це видима помилка в
+ * рядку спроби, а не мовчазний повтор останньої відповіді.
+ *
+ * `clock` — `page.clock.install` БЕЗ паузи: час іде сам, `runFor` додає тіки.
+ * Ставиться до `goto`, інакше демо стартує за справжнім годинником.
+ *
+ * Очікування першого значка — готовність, а не перевірка: карта вантажиться
+ * окремим чанком `ssr: false`.
  */
-async function open(page: Page, handler: (route: Route) => Promise<void>) {
+async function open(page: Page, handlers: Handler | Handler[], { clock = false } = {}) {
+  // Одиночний обробник — щоб тест «судно без швидкості й курсу» перейшов з R2
+  // байт у байт (CR :55: він без правок).
+  const queue = Array.isArray(handlers) ? handlers : [handlers];
+  if (clock) {
+    await page.clock.install({ time: new Date('2026-01-01T11:59:00.000Z') });
+  }
   await blockExternal(page);
-  await page.route('**/api/snapshot', handler);
+  let next = 0;
+  await page.route('**/api/snapshot', (route) => {
+    const handler = queue[next];
+    next += 1;
+    return handler === undefined ? route.abort() : handler(route);
+  });
   await page.goto('/');
   await page.locator('[data-vessel-id]').first().waitFor();
 }
 
-function json(body: unknown, status: number) {
-  return (route: Route) => route.fulfill({ status, json: body });
+/** Натиснути й дочекатися КІНЦЕВОГО тексту рядка — моменту, коли відповідь застосована. */
+async function load(page: Page, expectedLine: string) {
+  await loadButton(page).click();
+  await expect(attemptLine(page)).toHaveText(expectedLine);
 }
 
-test('успіх з одним судном: значок, підпис і картка справжнього судна', async ({ page }) => {
-  await open(page, json(SUCCESS_ONE, 200));
-  await loadButton(page).click();
+/**
+ * Рамка, що не змінюється між двома читаннями: зум і перетягування Leaflet
+ * анімовані, і рамка в середині анімації нічого б не доводила. `expect.poll`
+ * сам повторює читання з інтервалом — `waitForTimeout` не потрібен.
+ */
+async function settledBox(locator: Locator) {
+  let previous = '';
+  await expect.poll(async () => {
+    const current = JSON.stringify(await locator.boundingBox());
+    const settled = current !== 'null' && current === previous;
+    previous = current;
+    return settled;
+  }, { intervals: [250] }).toBe(true);
+  return JSON.parse(previous) as { x: number; y: number; width: number; height: number };
+}
 
-  const vessels = page.locator('[data-vessel-id]');
-  await expect(vessels).toHaveCount(1);
-  await expect(page.locator('[data-vessel-id="210385000"]')).toHaveCount(1);
-  await expect(
-    page.getByText('AISStream · знімок за 15 с · отримано 12:00:00 UTC · суден: 1 · вибірка неповна', { exact: true }),
-  ).toBeVisible();
-  // Повідомлення немає: непорожній успіх пояснень не потребує.
-  await expect(page.getByRole('status')).toHaveCount(0);
+test('успіх 12:00:00: набір замінений, підпис і рядок спроби, рух демонстрації зупинено', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200)], { clock: true });
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
 
-  await page.locator('[data-vessel-id="210385000"]').click();
+  // Набір замінено цілком: лише судно відповіді, жодного демо-судна (CR :30).
+  await expect(page.locator('[data-vessel-id]')).toHaveCount(1);
+  await expect(page.locator(REAL)).toHaveCount(1);
+  await expect(caption(page, CAPTION_1200)).toBeVisible();
+
+  await page.locator(REAL).click();
   await expect(cardField(page, 'Ідентифікатор')).toHaveText('210385000');
   await expect(cardField(page, 'Швидкість')).toHaveText('0 kn');
   await expect(cardField(page, 'Джерело')).toHaveText('AISStream');
+  await expect(cardField(page, 'Координати')).toHaveText('51.10000, 1.30000');
+
+  // CR :51: кілька тіків — справжні судна між завантаженнями не рухаються,
+  // і демо не повертається.
+  await page.clock.runFor(10_000);
+  await expect(cardField(page, 'Координати')).toHaveText('51.10000, 1.30000');
+  await expect(cardField(page, 'Час повідомлення')).toHaveText('11:59:56 UTC');
+  await expect(page.locator(DEMO)).toHaveCount(0);
+});
+
+test('повторне очікування: попередній набір на карті, кнопка заблокована, "Завантаження…"', async ({ page }) => {
+  const second = held(SUCCESS_AGAIN, 200);
+  await open(page, [json(SUCCESS_ONE, 200), second.handler]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+
+  // Вибір ДО другого натискання: картка має пережити очікування (D6).
+  await page.locator(REAL).click();
+  await expect(card(page)).toHaveCount(1);
+
+  await loadButton(page).click();
+
+  await expect(loadButton(page)).toBeDisabled();
+  await expect(attemptLine(page)).toHaveText('Завантаження…');
+  await expect(page.locator(REAL)).toHaveCount(1);
+  await expect(caption(page, CAPTION_1200)).toBeVisible();
+  await expect(card(page)).toHaveCount(1);
+
+  second.release();
+
+  await expect(attemptLine(page)).toHaveText('Спроба 12:01:00 UTC: отримано суден: 1');
+  await expect(loadButton(page)).toBeEnabled();
+});
+
+test('порожня відповідь 12:01:00 після успіху 12:00:00: набір і підпис збережені', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200), json(EMPTY_LATER, 200)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+  await load(page, 'Спроба 12:01:00 UTC: за час збору позицій не отримано');
+
+  await expect(caption(page, CAPTION_1200)).toBeVisible();
+  await expect(page.locator('[data-vessel-id]')).toHaveCount(1);
+  await expect(page.locator(REAL)).toHaveCount(1);
+});
+
+test('помилка 12:01:00 після успіху 12:00:00: набір і підпис збережені', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200), json(ERROR_LATER, 502)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+  await load(page, "Спроба 12:01:00 UTC: не вдалося отримати дані: З'єднання з джерелом розірвано");
+
+  await expect(caption(page, CAPTION_1200)).toBeVisible();
+  await expect(page.locator(REAL)).toHaveCount(1);
+  await expect(loadButton(page)).toBeEnabled();
+});
+
+test('збій за збоєм: рядок показує останню спробу, підпис — і далі останній успіх', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200), json(EMPTY_LATER, 200), json(ERROR_LATEST, 502)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+  await load(page, 'Спроба 12:01:00 UTC: за час збору позицій не отримано');
+  await load(page, "Спроба 12:02:00 UTC: не вдалося отримати дані: З'єднання з джерелом розірвано");
+
+  await expect(caption(page, CAPTION_1200)).toBeVisible();
+  await expect(page.locator(REAL)).toHaveCount(1);
+});
+
+test('помилка при демонстрації: судна рухаються, підпис "Демонстраційні дані", рядок без ключа', async ({ page }) => {
+  await open(page, [json(ERROR_NO_KEY, 502)], { clock: true });
+
+  // demo-3 — найдовший маршрут (22 с): за час завантаження сторінки він не стане.
+  await page.locator('[data-vessel-id="demo-3"]').click();
+  await load(page, 'Спроба 12:00:00 UTC: не вдалося отримати дані: Ключ AISStream не налаштовано');
+
+  await expect(caption(page, DEMO_CAPTION)).toBeVisible();
+  await expect(page.locator(DEMO)).toHaveCount(3);
+
+  const before = await cardField(page, 'Координати').textContent();
+  await page.clock.runFor(4_000);
+  await expect(cardField(page, 'Координати')).not.toHaveText(before ?? '');
+});
+
+test('порожній успіх при демонстрації: демо рухається далі, підпис не змінюється', async ({ page }) => {
+  await open(page, [json(EMPTY_LATER, 200)], { clock: true });
+
+  await page.locator('[data-vessel-id="demo-3"]').click();
+  await load(page, 'Спроба 12:01:00 UTC: за час збору позицій не отримано');
+
+  await expect(caption(page, DEMO_CAPTION)).toBeVisible();
+  await expect(page.locator(DEMO)).toHaveCount(3);
+
+  const before = await cardField(page, 'Координати').textContent();
+  await page.clock.runFor(4_000);
+  await expect(cardField(page, 'Координати')).not.toHaveText(before ?? '');
+});
+
+test('обраного судна немає в новому наборі: картка закрита, набори не злиті', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200), json(SUCCESS_OTHER, 200)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+  await page.locator(REAL).click();
+  await expect(card(page)).toHaveCount(1);
+
+  await load(page, 'Спроба 12:01:00 UTC: отримано суден: 1');
+
+  await expect(card(page)).toHaveCount(0);
+  await expect(page.locator(REAL)).toHaveCount(0);
+  await expect(page.locator('[data-vessel-id="235000001"]')).toHaveCount(1);
+});
+
+test('обране демо-судно після непорожнього успіху: картка закрита', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200)]);
+  await page.locator('[data-vessel-id="demo-1"]').click();
+  await expect(card(page)).toHaveCount(1);
+
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+
+  await expect(card(page)).toHaveCount(0);
+});
+
+test('обране судно є в новому наборі: картка показує нові координати й час', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200), json(SUCCESS_MOVED, 200)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+  await page.locator(REAL).click();
+  await expect(cardField(page, 'Координати')).toHaveText('51.10000, 1.30000');
+
+  await load(page, 'Спроба 12:01:00 UTC: отримано суден: 1');
+
+  await expect(cardField(page, 'Координати')).toHaveText('51.20000, 1.40000');
+  await expect(cardField(page, 'Час повідомлення')).toHaveText('12:00:58 UTC');
 });
 
 test('успіх, судно без швидкості й курсу: "Немає даних" і нейтральний значок', async ({ page }) => {
@@ -83,61 +310,54 @@ test('успіх, судно без швидкості й курсу: "Нема�
   await expect(cardField(page, 'Курс')).toHaveText('Немає даних');
 });
 
-test('порожній успіх: суден немає, підпис із "суден: 0" і пояснення', async ({ page }) => {
-  await open(page, json(EMPTY, 200));
-  await loadButton(page).click();
+test('успіх з truncated: підпис закінчується на " · зупинено на ліміті 100"', async ({ page }) => {
+  await open(page, [json(SUCCESS_TRUNCATED, 200)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
 
-  await expect(page.getByRole('status')).toHaveText('За час збору позицій не отримано');
-  await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
-  await expect(
-    page.getByText('AISStream · знімок за 15 с · отримано 12:00:00 UTC · суден: 0 · вибірка неповна', { exact: true }),
-  ).toBeVisible();
+  await expect(caption(page, `${CAPTION_1200} · зупинено на ліміті 100`)).toBeVisible();
 });
 
-test('помилка: карта порожня, "Даних на карті немає" і причина з відповіді', async ({ page }) => {
-  await open(page, json(ERROR_NO_KEY, 502));
-  await loadButton(page).click();
+test('другий непорожній успіх після зсуву карти: центр і масштаб не змінилися', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200), json(SUCCESS_AGAIN, 200)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+  const initial = await settledBox(markerRoot(page, REAL));
 
-  await expect(page.getByRole('status')).toHaveText('Не вдалося отримати дані: Ключ AISStream не налаштовано');
-  await expect(page.getByText('Даних на карті немає', { exact: true })).toBeVisible();
-  // Попередній (демонстраційний) набір НЕ зберігається — SPRINT-02:34, стан error.
-  await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
+  // Людина наблизилась і зсунула карту. Перетягування — з порожнього місця
+  // карти ліворуч від панелі, не з маркера.
+  await page.getByRole('button', { name: 'Zoom in' }).click();
+  await page.mouse.move(400, 500);
+  await page.mouse.down();
+  await page.mouse.move(500, 400, { steps: 10 });
+  await page.mouse.up();
+  const shifted = await settledBox(markerRoot(page, REAL));
+  // Без цього порівняння нижче нічого б не доводило: вид мав справді змінитися.
+  expect(shifted).not.toEqual(initial);
+
+  // Те саме судно в тих самих координатах: рамка маркера змінилася б лише від
+  // зміни виду карти.
+  await load(page, 'Спроба 12:01:00 UTC: отримано суден: 1');
+  expect(await settledBox(markerRoot(page, REAL))).toEqual(shifted);
 });
 
-test('завантаження: кнопка заблокована, демо зупинене, вибір прибрано', async ({ page }) => {
-  // Відповідь тримається, доки тест її не відпустить: без цього стан
-  // `loading` тривав би мілісекунди, і твердження про нього були б гонкою.
-  let release: () => void = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await open(page, async (route) => {
-    await held;
-    await route.fulfill({ status: 200, json: SUCCESS_ONE });
-  });
-
-  // Вибір ДО натискання: інакше «картки немає» нічого б не доводило.
-  await page.locator('[data-vessel-id="demo-1"]').click();
-  await expect(page.locator('aside dl')).toHaveCount(1);
-
-  await loadButton(page).click();
-
-  await expect(loadButton(page)).toBeDisabled();
-  await expect(page.getByText('Завантаження…', { exact: true })).toBeVisible();
-  await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
-  await expect(page.locator('aside dl')).toHaveCount(0);
-
-  release();
+test('відповідь без тіла: "Немає відповіді сервера" без часу, набір збережений', async ({ page }) => {
+  await open(page, [(route) => route.fulfill({ status: 502, body: '' })]);
+  await load(page, 'Спроба: не вдалося отримати дані: Немає відповіді сервера');
 
   await expect(loadButton(page)).toBeEnabled();
-  await expect(page.locator('[data-vessel-id="210385000"]')).toHaveCount(1);
+  await expect(caption(page, DEMO_CAPTION)).toBeVisible();
+  await expect(page.locator(DEMO)).toHaveCount(3);
 });
 
-test('відповідь без тіла: помилка "Немає відповіді сервера", а не вічне завантаження', async ({ page }) => {
-  await open(page, (route) => route.fulfill({ status: 502, body: '' }));
-  await loadButton(page).click();
+test('підказка про оновлення сторінки є завжди, і рядок спроби видно згорнутою панеллю', async ({ page }) => {
+  await open(page, [json(ERROR_NO_KEY, 502)]);
 
-  await expect(page.getByRole('status')).toHaveText('Не вдалося отримати дані: Немає відповіді сервера');
-  await expect(loadButton(page)).toBeEnabled();
-  await expect(page.locator('[data-vessel-id]')).toHaveCount(0);
+  // До першого натискання: підказка є, рядка спроби немає (CR :25).
+  await expect(page.getByText(HINT, { exact: true })).toBeVisible();
+  await expect(attemptLine(page)).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Згорнути' }).click();
+  await load(page, 'Спроба 12:00:00 UTC: не вдалося отримати дані: Ключ AISStream не налаштовано');
+
+  await expect(page.getByText(HINT, { exact: true })).toBeVisible();
+  await expect(attemptLine(page)).toBeVisible();
 });
