@@ -8,15 +8,11 @@ import {
   SOURCE_LABELS,
   fleetAtTick,
   lastFleetTick,
-  type Vessel,
 } from '@/entities/vessel';
 
+import { attemptLine, type Attempt } from '../lib/attempt-line';
 import { fetchSnapshot } from '../lib/fetch-snapshot';
-import {
-  NO_SERVER_RESPONSE,
-  snapshotCaption,
-  type SnapshotSuccess,
-} from '../lib/snapshot-caption';
+import { snapshotCaption, type SnapshotSuccess } from '../lib/snapshot-caption';
 import { DoverStraitMap } from './dover-strait-map';
 import { VesselPanel } from './vessel-panel';
 
@@ -29,7 +25,8 @@ import { VesselPanel } from './vessel-panel';
 // похідного від часу: інакше годинник складальної машини запікся б у HTML
 // і дав розбіжність при гідратації. `startedAt` серверного рендера й
 // клієнтського РІЗНІ — розбіжності немає не тому, що вони збігаються, а тому,
-// що з них нічого не рендериться, поки вибір порожній.
+// що з них нічого не рендериться, поки вибір порожній. Рядок спроби до
+// першого натискання відсутній, підказка — статичний текст.
 
 /**
  * Тік, на якому стає ОСТАННЄ судно. Похідне від даних (найдовший маршрут — 12
@@ -41,56 +38,28 @@ import { VesselPanel } from './vessel-panel';
 const LAST_TICK = lastFleetTick(DEMO_ROUTES);
 
 /**
- * Результат ОСТАННЬОЇ спроби (SPRINT-02:30…:35). Порожній успіх — це `success`
- * із `count: 0`, а не окремий варіант: підпис у нього той самий, різниться
- * лише пояснення, і окремий вид дублював би відповідь сервера.
+ * Показаний набір — ПЕРШИЙ із двох незалежних станів R4 (CR :23). Другий —
+ * результат останньої спроби (`Attempt`, `attempt-line.ts`), і з цим він не
+ * перетинається: невдала спроба змінює лише рядок спроби.
  *
- * У `error` набору немає за побудовою — полю `vessels` там нема де лежати.
- * «Дбайливо» зберегти попередній набір після помилки тут неможливо формою
- * типу, а не домовленістю: SPRINT-02:91 прямо називає це поверненням на
- * доопрацювання.
+ * `snapshot` — лише НЕПОРОЖНІЙ успіх; це умова в `handleLoad`. Порожній успіх
+ * і помилка набір не змінюють (CR :27). Назад у `demo` стан не повертається —
+ * лише оновленням сторінки (CR :32).
+ *
+ * До R4 тут був один `LoadState`, і в `error` набору не було де лежати — так
+ * узгоджувало SPRINT-02:30…:35. Лист замовника № 3 змінив вимогу після досвіду
+ * занять: збій більше не стирає карту.
  */
-type LoadState =
-  | { kind: 'idle-demo' }
-  | { kind: 'loading' }
-  | { kind: 'success'; response: SnapshotSuccess }
-  | { kind: 'error'; message: string };
-
-// Тексти станів — дослівно з SPRINT-02:31…:35.
-const LOADING_CAPTION = 'Завантаження…';
-const NO_DATA_CAPTION = 'Даних на карті немає';
-const EMPTY_NOTICE = 'За час збору позицій не отримано';
-
-/** Порожній набір — модульна стала, щоб його ідентичність не мінялася з рендером
- * і ефект маркерів не перезапускався без причини. */
-const NO_VESSELS: readonly Vessel[] = [];
-
-/** Підпис і пояснення — чисте похідне від стану, без жодного `useState`. */
-function describe(load: LoadState): { caption: string; notice: string | null } {
-  switch (load.kind) {
-    case 'idle-demo':
-      return { caption: SOURCE_LABELS.demo, notice: null };
-    case 'loading':
-      return { caption: LOADING_CAPTION, notice: null };
-    case 'success':
-      return {
-        caption: snapshotCaption(load.response),
-        notice: load.response.count === 0 ? EMPTY_NOTICE : null,
-      };
-    case 'error':
-      return { caption: NO_DATA_CAPTION, notice: `Не вдалося отримати дані: ${load.message}` };
-  }
-}
+type Shown = { kind: 'demo' } | { kind: 'snapshot'; response: SnapshotSuccess };
 
 export function VesselView() {
   const [selectedVesselId, setSelectedVesselId] = useState<string | null>(null);
-  const [load, setLoad] = useState<LoadState>({ kind: 'idle-demo' });
+  const [shown, setShown] = useState<Shown>({ kind: 'demo' });
+  const [attempt, setAttempt] = useState<Attempt>({ kind: 'none' });
 
   // Команда карті «до початкового виду» — лічильник, а не прапорець (див.
-  // `LeafletMapProps.resetViewKey`). Чи був уже непорожній успіх — ref, а не
-  // стан: він нічого не рендерить, і читається лише в обробнику, не в рендері.
+  // `LeafletMapProps.resetViewKey`).
   const [resetViewKey, setResetViewKey] = useState(0);
-  const hadNonEmptySuccessRef = useRef(false);
 
   // ЄДИНА ЗАКОННА ФОРМА моменту старту, і це виміряно проти справжнього конфігу
   // цього репозиторію, а не обрано на смак: `eslint-plugin-react-hooks@7.1.1`
@@ -107,18 +76,19 @@ export function VesselView() {
   // на відміну від `useRef(Date.now())`, ініціалізатор тут нічого не кличе.
   const ticksRef = useRef(0);
 
-  // Поки останнє судно не стало. На `tick === LAST_TICK` стає `false`, ефект
-  // чиститься, і новий інтервал не створюється: через ~22 с застосунок
-  // повністю тихий — таймерів немає, рендерів немає, Leaflet не діфить маркери.
-  // Останній тік при цьому ВІДБУВАЄТЬСЯ: на `tick === LAST_TICK - 1` умова ще
-  // істинна, інтервал спрацьовує, і аж тоді ефект чиститься.
+  // Поки показана демонстрація і останнє судно не стало. На `tick === LAST_TICK`
+  // стає `false`, ефект чиститься, і новий інтервал не створюється: через ~22 с
+  // застосунок повністю тихий — таймерів немає, рендерів немає, Leaflet не
+  // діфить маркери. Останній тік при цьому ВІДБУВАЄТЬСЯ: на
+  // `tick === LAST_TICK - 1` умова ще істинна, інтервал спрацьовує, і аж тоді
+  // ефект чиститься.
   //
-  // Поза `idle-demo` не тікає нічого: натискання кнопки зупиняє демонстрацію
-  // (SPRINT-02:31), а справжні судна між завантаженнями не рухаються
+  // Від спроби рух НЕ залежить (CR :26, :27): під час запиту й після збою
+  // демонстрація рухається далі. Зупиняє її лише заміна набору непорожнім
+  // успіхом (CR :28), а справжні судна між завантаженнями не рухаються
   // (SPRINT-02:37). Той самий ефект на `[running]` і прибирає інтервал, тож
-  // окремого механізму зупинки немає. Назад в `idle-demo` застосунок не
-  // повертається — лише оновленням сторінки (SPRINT-02:13).
-  const running = load.kind === 'idle-demo' && tick < LAST_TICK;
+  // окремого механізму зупинки немає.
+  const running = shown.kind === 'demo' && tick < LAST_TICK;
 
   useEffect(() => {
     if (!running) {
@@ -162,46 +132,51 @@ export function VesselView() {
   // Уся робота кнопки — в обробнику, не в ефекті й не в рендері: запит — наслідок
   // дії людини, і правила React Compiler тримають побічні дії саме тут.
   //
-  // Вибір скидається ДО запиту: у `loading` суден немає (SPRINT-02:31), і
-  // картка, що пережила б їх, показувала б судно, якого на карті нема. Повторне
-  // натискання під час збору неможливе — кнопка `disabled` у `loading`, і це
-  // єдиний захист: другого запиту обробник не очікує.
+  // Набір, підпис і вибір на час запиту НЕ чіпаються (CR :26): картка
+  // закривається лише вибором іншого судна, а судно лишається на карті.
+  // Повторне натискання під час збору неможливе — кнопка `disabled`, поки
+  // спроба `loading`, і це єдиний захист: другого запиту обробник не очікує.
+  // З тієї ж причини `shown` із замикання актуальний — інших записувачів у
+  // нього немає.
+  //
+  // Усі `set*` після `await` стоять в одному синхронному відрізку, тож React
+  // зводить їх в один рендер: карта, картка, підпис і рядок спроби
+  // змінюються разом — це і є «атомарно» з CR :28.
   async function handleLoad() {
-    setSelectedVesselId(null);
-    setLoad({ kind: 'loading' });
+    setAttempt({ kind: 'loading' });
 
     const response = await fetchSnapshot();
+    setAttempt({ kind: 'done', response });
 
-    if (response === null) {
-      setLoad({ kind: 'error', message: NO_SERVER_RESPONSE });
-      return;
-    }
-    if (!response.ok) {
-      setLoad({ kind: 'error', message: response.error.message });
+    // Лише непорожній успіх замінює набір (CR :27, :28).
+    if (response === null || !response.ok || response.count === 0) {
       return;
     }
 
-    setLoad({ kind: 'success', response });
+    // Обраний id, якого немає в новому наборі, скидається В СТАНІ, а не лише
+    // ховається через `find` нижче: інакше він «воскрес» би з наступним
+    // знімком, де це судно знову є, і картка відкрилася б сама.
+    const ids = new Set(response.vessels.map((vessel) => vessel.id));
+    setSelectedVesselId((id) => (id !== null && ids.has(id) ? id : null));
 
-    // Вид повертається лише на ПЕРШИЙ непорожній успіх (SPRINT-02:33): далі
-    // людина могла сама наблизитися до ділянки, і наступний знімок не має
-    // її звідти висмикувати.
-    if (response.count > 0 && !hadNonEmptySuccessRef.current) {
-      hadNonEmptySuccessRef.current = true;
+    // Вид повертається лише на ПЕРШИЙ непорожній успіх (CR :29), тобто на
+    // переході з демонстрації: далі людина могла сама наблизитися до ділянки,
+    // і наступний знімок не має її звідти висмикувати.
+    if (shown.kind === 'demo') {
       setResetViewKey((previous) => previous + 1);
     }
+
+    // Набір замінюється цілком, без злиття з попереднім (CR :30): судна, якого
+    // немає в новій відповіді, на карті більше немає — і це не «вийшло з району».
+    setShown({ kind: 'snapshot', response });
   }
 
-  // Усе видиме — похідне від стану спроби й двох чисел. Карта й картка читають
+  // Усе видиме — похідне від двох станів і двох чисел. Карта й картка читають
   // РЕЗУЛЬТАТ ОДНОГО ВИРАЗУ, тож розійтися їм нема на чому. Демонстраційний
-  // флот рахується лише в `idle-demo`.
+  // флот рахується лише поки показана демонстрація.
   const vessels =
-    load.kind === 'idle-demo'
-      ? fleetAtTick(DEMO_ROUTES, tick, startedAt)
-      : load.kind === 'success'
-        ? load.response.vessels
-        : NO_VESSELS;
-  const { caption, notice } = describe(load);
+    shown.kind === 'demo' ? fleetAtTick(DEMO_ROUTES, tick, startedAt) : shown.response.vessels;
+  const caption = shown.kind === 'demo' ? SOURCE_LABELS.demo : snapshotCaption(shown.response);
 
   // У стані лежить тільки id, ніколи копія судна: судно застаріло б з першим
   // же тіком, а id — ні. Саме тому оновлення картки на тіку безкоштовне.
@@ -222,8 +197,8 @@ export function VesselView() {
       <VesselPanel
         vessel={selectedVessel}
         caption={caption}
-        notice={notice}
-        loading={load.kind === 'loading'}
+        attempt={attemptLine(attempt)}
+        loading={attempt.kind === 'loading'}
         onLoad={handleLoad}
       />
     </>
