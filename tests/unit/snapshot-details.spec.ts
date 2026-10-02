@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-import { diagnosticsLine, windowLabel, windowValueText } from '@/_pages/home/lib/snapshot-details';
+import { diagnosticsLine, progressLabel, windowLabel, windowValueText } from '@/_pages/home/lib/snapshot-details';
 
 // Тексти панелі налаштувань і блоку «Докладно» — специфікація 2026-09-29
 // §5.1, §5.4. Очікування — літерали.
@@ -31,4 +31,16 @@ test('кілька типів — у сталому порядку, other ост
 test('помилка: без суден; з\'єднання не відкрите; повідомлень 0 — без дужок', () => {
   expect(diagnosticsLine({ connectMs: null, messages: 0, rejected: 0, byType: {} }, null))
     .toBe("з'єднання: не відкрито · повідомлень: 0 · відкинуто: 0");
+});
+
+// Лічильник під смугою збору. Секунди цілі, донизу: «13 с» не настає раніше
+// за 13-ту секунду. Понад вікно не росте — сервер може відповісти пізніше.
+test('лічильник збору: цілі секунди донизу, понад вікно не росте', () => {
+  expect([0, 999, 13_400, 30_000, 41_000].map((ms) => progressLabel(ms, 30)))
+    .toEqual(['0 с із 30 с', '0 с із 30 с', '13 с із 30 с', '30 с із 30 с', '30 с із 30 с']);
+});
+
+test('лічильник збору: вікно понад хвилину — хвилини й секунди', () => {
+  expect([75_000, 120_000, 60_000].map((ms) => progressLabel(ms, 120)))
+    .toEqual(['1 хв 15 с із 2 хв', '2 хв із 2 хв', '1 хв із 2 хв']);
 });

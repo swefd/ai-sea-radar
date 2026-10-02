@@ -16,6 +16,22 @@ export function windowValueText(seconds: number): string {
   return `${minutes} ${minutes < 5 ? 'хвилини' : 'хвилин'}`;
 }
 
+function minutesSeconds(total: number): string {
+  if (total < 60) return `${total} с`;
+  const rest = total % 60;
+  return rest === 0 ? `${total / 60} хв` : `${Math.floor(total / 60)} хв ${rest} с`;
+}
+
+/**
+ * Підпис під смугою збору. Час — браузерний відлік від натискання, тобто
+ * оцінка: сервер свого прогресу не повідомляє. Тому понад вікно лічильник не
+ * росте — відповідь може прийти пізніше, а «35 с із 30 с» читалося б як збій.
+ */
+export function progressLabel(elapsedMs: number, windowSeconds: number): string {
+  const elapsed = Math.min(Math.floor(elapsedMs / 1000), windowSeconds);
+  return `${minutesSeconds(elapsed)} із ${minutesSeconds(windowSeconds)}`;
+}
+
 /** Порядок типів сталий: інакше рядок стрибав би між однаковими спробами. */
 const TYPE_ORDER = ['PositionReport', 'StandardClassBPositionReport', 'other'] as const;
 const TYPE_LABEL: Record<(typeof TYPE_ORDER)[number], string> = {
