@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 B-01 delivered the skeleton: `package.json`, `tsconfig.json`, `next.config.ts`, `.nvmrc`, `.gitignore`, `app/layout.tsx`, `app/page.tsx`, a lock file, and a git repo on `main`. B-02 onward extends it — do not re-scaffold. The verify layer (`scripts/verify/`, `.claude/hooks/`, `.claude/settings.json`) came after B-02; it is working method, not a backlog item — see "Перевірка".
 
-Release R1 (B-01…B-07) is closed by `docs/checkpoints/CHECKPOINT-01.md`. Release R2 (B-08…B-13) is closed by `docs/checkpoints/CHECKPOINT-04.md`. Release R3 (B-14…B-17) is closed by `docs/checkpoints/CHECKPOINT-05.md` on branch `sprint-03`. R4 (`SPRINT-03b-CHANGE-REQUEST.md`) is next.
+Release R1 (B-01…B-07) is closed by `docs/checkpoints/CHECKPOINT-01.md`. Release R2 (B-08…B-13) is closed by `docs/checkpoints/CHECKPOINT-04.md`. Release R3 (B-14…B-17) is closed by `docs/checkpoints/CHECKPOINT-03.md` on branch `sprint-03`. R4 (`SPRINT-03b-CHANGE-REQUEST.md`) is next.
 
 ## What Sea Radar is
 
