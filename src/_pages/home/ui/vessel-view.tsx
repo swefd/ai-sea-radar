@@ -10,6 +10,7 @@ import {
   lastFleetTick,
   type Vessel,
 } from '@/entities/vessel';
+import { DEFAULT_SNAPSHOT_SETTINGS } from '@/shared/config';
 
 import { fetchSnapshot } from '../lib/fetch-snapshot';
 import {
@@ -170,7 +171,10 @@ export function VesselView() {
     setSelectedVesselId(null);
     setLoad({ kind: 'loading' });
 
-    const response = await fetchSnapshot();
+    const response = await fetchSnapshot(DEFAULT_SNAPSHOT_SETTINGS);
+
+    // Скасування з'явиться в Task 5; до того сигналу немає, і гілка недосяжна.
+    if (response === 'cancelled') return;
 
     if (response === null) {
       setLoad({ kind: 'error', message: NO_SERVER_RESPONSE });
