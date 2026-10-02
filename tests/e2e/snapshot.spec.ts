@@ -265,6 +265,43 @@ test('налаштування заблоковані під час завант
   await expect(page.getByRole('slider', { name: 'Вікно збору' })).toBeEnabled();
 });
 
+// Смуга збору рахує вибране вікно браузерним годинником від натискання — це
+// оцінка, сервер свого прогресу не шле. `page.clock` тут не на паузі (карта
+// вантажиться чанком, що чекає таймерів), тож час іде й сам: звідси діапазон
+// «13 або 14 с» після стрибка на 13 с, а не одне число.
+test('смуга збору: лічильник секунд, стеля на вікні, зникає з відповіддю', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-01-01T12:00:00.000Z') });
+  const held = heldRoute();
+  await open(page, held.handler);
+
+  const progress = page.getByRole('progressbar', { name: 'Збір позицій' });
+  await expect(progress).toHaveCount(0);
+
+  await loadButton(page).click();
+  await expect(progress).toBeVisible();
+  await expect(progress).toHaveAttribute('aria-valuemax', '15');
+
+  await page.clock.fastForward(13_000);
+  await expect(page.getByText(/^1[34] с із 15 с$/)).toBeVisible();
+
+  await page.clock.fastForward(10_000);
+  await expect(page.getByText('15 с із 15 с', { exact: true })).toBeVisible();
+  await expect(progress).toHaveAttribute('aria-valuenow', '15');
+
+  await held.release();
+  await expect(progress).toHaveCount(0);
+});
+
+test('смуга збору зникає після «Скасувати»', async ({ page }) => {
+  const held = heldRoute();
+  await open(page, held.handler);
+
+  await loadButton(page).click();
+  await expect(page.getByRole('progressbar', { name: 'Збір позицій' })).toBeVisible();
+  await cancelButton(page).click();
+  await expect(page.getByRole('progressbar', { name: 'Збір позицій' })).toHaveCount(0);
+});
+
 test('«Докладно»: закрите за замовчуванням, розкривається кліком', async ({ page }) => {
   await open(page, json({
     ...SUCCESS_ONE,

@@ -16,13 +16,13 @@
 // позицій і червоного юніт-рядка, перш ніж її дотримали.
 'use client';
 
-import { useState, type MouseEvent } from 'react';
+import { Fragment, useEffect, useState, type MouseEvent } from 'react';
 
 import type { Vessel } from '@/entities/vessel';
 import { VesselCard } from '@/entities/vessel/ui/vessel-card';
 import { SNAPSHOT_WINDOW_OPTIONS, type SnapshotSettings } from '@/shared/config';
 
-import { windowLabel, windowValueText } from '../lib/snapshot-details';
+import { progressLabel, windowLabel, windowValueText } from '../lib/snapshot-details';
 
 import styles from './vessel-panel.module.css';
 
@@ -76,11 +76,78 @@ function ChevronIcon({ pointsUp }: { readonly pointsUp: boolean }) {
   );
 }
 
-// Порядок згори вниз зафіксований у ТЗ: кнопка, підпис джерела, картка.
-//
-// Кнопка згортання місця кнопки завантаження НЕ ЗАЙМАЄ: вона живе в шапці
-// панелі, поруч із підписом, а «Завантажити справжні позиції» стоїть окремим
-// рядком НАД шапкою (рішення плану SPRINT-03 «Panel order»).
+/** Крок оновлення смуги. Чверть секунди — досить, щоб лічильник цілих секунд
+ * не запізнювався помітно, і замало, щоб ганяти рендер без потреби. */
+const PROGRESS_TICK_MS = 250;
+
+/**
+ * Смуга збору з лічильником секунд. Відлік — браузерний годинник від монтування,
+ * тобто від натискання: сервер свого прогресу не шле, тож це оцінка за
+ * вибраним вікном, а не стан збору. Компонент живе лише в `loading`, тому
+ * таймер з'являється з натисканням і зникає з відповіддю чи «Скасувати»:
+ * демонстраційного руху й `page.clock` тестів руху він не торкається.
+ */
+function CollectProgress({ windowSeconds }: { readonly windowSeconds: number }) {
+  const [startedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(startedAt);
+
+  useEffect(() => {
+    const intervalId = setInterval(() => setNow(Date.now()), PROGRESS_TICK_MS);
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  const elapsedMs = now - startedAt;
+  const label = progressLabel(elapsedMs, windowSeconds);
+  const fraction = Math.min(elapsedMs / (windowSeconds * 1000), 1);
+
+  return (
+    <div className={styles.progress}>
+      <div
+        className={styles.track}
+        role="progressbar"
+        aria-label="Збір позицій"
+        aria-valuemin={0}
+        aria-valuemax={windowSeconds}
+        aria-valuenow={Math.min(Math.floor(elapsedMs / 1000), windowSeconds)}
+        aria-valuetext={label}
+      >
+        <span className={styles.fill} style={{ width: `${fraction * 100}%` }} />
+      </div>
+      <p className={styles.progressText}>
+        <span>Збір позицій…</span>
+        <span>{label}</span>
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Підпис джерела, що переноситься лише МІЖ сегментами « · », а не посеред
+ * «12:00:00 UTC». Розділювач іде в кінець попереднього сегмента, щоб рядок не
+ * починався з крапки, а пробіл — поза сегментом, де він і є місцем переносу.
+ * Текст абзацу лишається тим самим рядком, тож тести, що шукають підпис
+ * точним збігом, його знаходять.
+ */
+function Caption({ text }: { readonly text: string }) {
+  const segments = text.split(' · ');
+  const last = segments.length - 1;
+  return (
+    <p className={styles.source}>
+      {segments.map((segment, index) => (
+        <Fragment key={index}>
+          <span className={styles.segment}>{index < last ? `${segment} ·` : segment}</span>
+          {index < last ? ' ' : null}
+        </Fragment>
+      ))}
+    </p>
+  );
+}
+
+// Порядок згори вниз зафіксований у ТЗ: кнопка, підпис джерела, картка
+// (SPRINT-03b:34 додає між ними рядок спроби й підказку — B-18). Панель
+// поділена на три секції з власними заголовками, і цей порядок вони тримають.
 //
 // ЩО ТРИМАЄ РОЗМІТКА НИЖЧЕ, згори вниз:
 //
@@ -88,38 +155,37 @@ function ChevronIcon({ pointsUp }: { readonly pointsUp: boolean }) {
 // може: `backdrop-filter` розмиває те, що ПОЗАДУ елемента, і градієнт самої
 // панелі він не зачепив би.
 //
-// `.actions` — кнопка завантаження. Поза `.body`, тож видима й згорнутою
-// панеллю: єдина дія застосунку не має ховатися за іншою кнопкою. У `loading`
-// та сама кнопка стає «Скасувати» — рішення власника 2026-10-02, що замінило
-// `disabled` з SPRINT-02:11: удруге завантажити не можна, бо такої кнопки
-// зараз немає. Елемент DOM один і той самий, тож фокус клавіатури на ньому
-// лишається. Другий клік подвійного кліку (`detail > 1`) влучає вже в
-// «Скасувати» — його відкинуто, інакше подвійний клік обривав би власну спробу.
+// «Новий знімок» — повзунок вікна й прапорець класу B, під ними кнопка: їх
+// вибирають ДО натискання. `<fieldset disabled>` блокує обидва одним атрибутом
+// під час збору. `aria-label` повзунка явний, бо видимий `<label>` містить
+// змінне число, а тест і читач екрана шукають стале ім'я. Секція поза `.body`,
+// тож видима й згорнутою панеллю: єдина дія застосунку не має ховатися за
+// іншою кнопкою.
 //
-// `.settings` — повзунок вікна й прапорець класу B, над кнопкою: їх вибирають
-// ДО натискання. `<fieldset disabled>` блокує обидва одним атрибутом під час
-// збору. Поза `.body`, тож видимі й згорнутою панеллю. `aria-label` повзунка
-// явний, бо видимий `<label>` містить змінне число, а тест і читач екрана
-// шукають стале ім'я.
+// Кнопка завантаження. У `loading` та сама кнопка стає «Скасувати» — рішення
+// власника 2026-10-02, що замінило `disabled` з SPRINT-02:11: удруге
+// завантажити не можна, бо такої кнопки зараз немає. Елемент DOM один і той
+// самий, тож фокус клавіатури на ньому лишається. Другий клік подвійного кліку
+// (`detail > 1`) влучає вже в «Скасувати» — його відкинуто, інакше подвійний
+// клік обривав би власну спробу. Над нею в `loading` — смуга збору.
 //
-// `.source` — підпис стану, видимий ЗАВЖДИ, у тому числі згорнутою панеллю.
-// US-06 вимагає, щоб на екрані було написано, які саме дані показано, тому
-// згортання ховає вміст, а не панель цілком: інакше вимога зникала б разом
-// із нею.
+// «Дані на карті» — підпис стану, видимий ЗАВЖДИ, у тому числі згорнутою
+// панеллю. US-06 вимагає, щоб на екрані було написано, які саме дані показано,
+// тому згортання ховає вміст, а не панель цілком: інакше вимога зникала б разом
+// із нею. Кнопка згортання — у заголовку цієї секції: вона ховає те, що нижче.
 //
 // `.notice` — пояснення порожнього успіху чи помилки, `role="status"`, щоб
-// читач екрана оголосив результат спроби, якої людина чекала. Стоїть одразу
-// під шапкою й поза `.body` з тієї ж причини, що й підпис: без нього
-// «суден: 0» і «Даних на карті немає» лишилися б без причини. Рендериться
-// лише коли є що сказати — порожній вузол зі статусом був би шумом.
+// читач екрана оголосив результат спроби, якої людина чекала. Поза `.body` з
+// тієї ж причини, що й підпис: без нього «суден: 0» і «Даних на карті немає»
+// лишилися б без причини. Рендериться лише коли є що сказати — порожній вузол
+// зі статусом був би шумом.
 //
-// `.details` — «Докладно», закритий за замовчуванням (специфікація 2026-09-29
-// §5.4). Живе першим у `.body`, тож згортання ховає його разом із карткою.
-//
-// `.body` — вміст, що лишається в DOM і згорнутою панеллю; ховає його CSS.
-// Умовний рендер скидав би позицію прокручування картки на кожне згортання, а
-// доказу більше не давав би: `inert` знімає вміст і з фокуса, і з дерева
-// доступності, тобто з погляду клавіатури та читача екрана його немає.
+// `.body` — «Обране судно» і «Докладно» (закритий за замовчуванням,
+// специфікація 2026-09-29 §5.4). Лишається в DOM і згорнутою панеллю; ховає
+// його CSS. Умовний рендер скидав би позицію прокручування картки на кожне
+// згортання, а доказу більше не давав би: `inert` знімає вміст і з фокуса, і з
+// дерева доступності, тобто з погляду клавіатури та читача екрана його немає.
+// Вміст `.body` стоїть без переносів між виразами — див. `.body:empty` у CSS.
 export function VesselPanel({
   vessel,
   caption,
@@ -142,40 +208,45 @@ export function VesselPanel({
     <aside className={`${styles.panel} ${collapsed ? styles.collapsed : ''}`}>
       <div className={styles.aurora} aria-hidden="true" />
 
-      <fieldset className={styles.settings} disabled={loading}>
-        <label className={styles.settingLabel} htmlFor="snapshot-window">
-          Вікно збору: {windowLabel(settings.windowSeconds)}
-        </label>
-        <input
-          id="snapshot-window"
-          className={styles.slider}
-          type="range"
-          min={0}
-          max={SNAPSHOT_WINDOW_OPTIONS.length - 1}
-          step={1}
-          value={SNAPSHOT_WINDOW_OPTIONS.indexOf(settings.windowSeconds as (typeof SNAPSHOT_WINDOW_OPTIONS)[number])}
-          aria-label="Вікно збору"
-          aria-valuetext={windowValueText(settings.windowSeconds)}
-          onChange={(event) =>
-            onSettingsChange({ ...settings, windowSeconds: SNAPSHOT_WINDOW_OPTIONS[Number(event.target.value)] })
-          }
-        />
-        <div className={styles.ticks} aria-hidden="true">
-          {SNAPSHOT_WINDOW_OPTIONS.map((seconds) => (
-            <span key={seconds}>{windowLabel(seconds)}</span>
-          ))}
-        </div>
-        <label className={styles.checkbox}>
-          <input
-            type="checkbox"
-            checked={settings.includeClassB}
-            onChange={(event) => onSettingsChange({ ...settings, includeClassB: event.target.checked })}
-          />
-          Малі судна (клас B)
-        </label>
-      </fieldset>
+      <section className={styles.section}>
+        <h2 className={styles.eyebrow}>Новий знімок</h2>
 
-      <div className={styles.actions}>
+        <fieldset className={styles.settings} disabled={loading}>
+          <label className={styles.settingRow} htmlFor="snapshot-window">
+            <span>Вікно збору</span>
+            <span className={styles.settingValue}>{windowLabel(settings.windowSeconds)}</span>
+          </label>
+          <input
+            id="snapshot-window"
+            className={styles.slider}
+            type="range"
+            min={0}
+            max={SNAPSHOT_WINDOW_OPTIONS.length - 1}
+            step={1}
+            value={SNAPSHOT_WINDOW_OPTIONS.indexOf(settings.windowSeconds as (typeof SNAPSHOT_WINDOW_OPTIONS)[number])}
+            aria-label="Вікно збору"
+            aria-valuetext={windowValueText(settings.windowSeconds)}
+            onChange={(event) =>
+              onSettingsChange({ ...settings, windowSeconds: SNAPSHOT_WINDOW_OPTIONS[Number(event.target.value)] })
+            }
+          />
+          <div className={styles.ticks} aria-hidden="true">
+            {SNAPSHOT_WINDOW_OPTIONS.map((seconds) => (
+              <span key={seconds}>{windowLabel(seconds)}</span>
+            ))}
+          </div>
+          <label className={styles.checkbox}>
+            <input
+              type="checkbox"
+              checked={settings.includeClassB}
+              onChange={(event) => onSettingsChange({ ...settings, includeClassB: event.target.checked })}
+            />
+            Малі судна (клас B)
+          </label>
+        </fieldset>
+
+        {loading && <CollectProgress windowSeconds={settings.windowSeconds} />}
+
         <button
           type="button"
           className={`${styles.load} ${loading ? styles.cancel : ''}`}
@@ -183,38 +254,41 @@ export function VesselPanel({
         >
           {loading ? CANCEL_BUTTON_LABEL : LOAD_BUTTON_LABEL}
         </button>
-      </div>
+      </section>
 
-      <div className={styles.header}>
-        <p className={styles.source}>{caption}</p>
-
-        <button
-          type="button"
-          className={styles.toggle}
-          onClick={() => setCollapsed((previous) => !previous)}
-          aria-expanded={!collapsed}
-          aria-controls="vessel-panel-body"
-        >
-          <ChevronIcon pointsUp={!collapsed} />
-          <span className={styles.toggleLabel}>{collapsed ? 'Показати' : 'Згорнути'}</span>
-        </button>
-      </div>
-
-      {notice !== null && (
-        <p className={styles.notice} role="status">
-          {notice}
-        </p>
-      )}
-
-      <div className={styles.body} id="vessel-panel-body" inert={collapsed}>
-        {details !== null && (
-          <details className={styles.details}>
-            <summary>Докладно</summary>
-            <p>{details}</p>
-          </details>
+      <section className={styles.section}>
+        <div className={styles.sectionHead}>
+          <h2 className={styles.eyebrow}>Дані на карті</h2>
+          <button
+            type="button"
+            className={styles.toggle}
+            onClick={() => setCollapsed((previous) => !previous)}
+            aria-expanded={!collapsed}
+            aria-controls="vessel-panel-body"
+          >
+            <ChevronIcon pointsUp={!collapsed} />
+            <span className={styles.toggleLabel}>{collapsed ? 'Показати' : 'Згорнути'}</span>
+          </button>
+        </div>
+        <Caption text={caption} />
+        {notice !== null && (
+          <p className={styles.notice} role="status">
+            {notice}
+          </p>
         )}
-        {vessel !== null && <VesselCard vessel={vessel} />}
-      </div>
+      </section>
+
+      <div className={styles.body} id="vessel-panel-body" inert={collapsed}>{vessel !== null && (
+        <section className={styles.cardSection}>
+          <h2 className={styles.eyebrow}>Обране судно</h2>
+          <VesselCard vessel={vessel} />
+        </section>
+      )}{details !== null && (
+        <details className={styles.details}>
+          <summary>Докладно</summary>
+          <p>{details}</p>
+        </details>
+      )}</div>
     </aside>
   );
 }
