@@ -7,7 +7,8 @@
 import type { Vessel } from './vessel';
 
 export type SnapshotErrorCode =
-  | 'no_api_key' | 'connect_failed' | 'provider_error' | 'disconnected' | 'internal';
+  | 'no_api_key' | 'connect_failed' | 'provider_error' | 'disconnected' | 'internal'
+  | 'invalid_params';
 
 export type SnapshotResponse =
   | {
@@ -18,5 +19,6 @@ export type SnapshotResponse =
       count: number;
       truncated: boolean;
       reason: 'window_elapsed' | 'limit_reached';
+      includeClassB: boolean;
     }
   | { ok: false; attemptedAt: string; error: { code: SnapshotErrorCode; message: string } };

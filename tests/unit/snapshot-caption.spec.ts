@@ -12,6 +12,7 @@ const BASE = {
   count: 3,
   truncated: false,
   reason: 'window_elapsed' as const,
+  includeClassB: false,
 };
 
 test('успіх: підпис дослівно', () => {

@@ -11,7 +11,9 @@ import { vesselFromPositionReport } from '@/entities/vessel';
 import { collect } from '@/shared/api/aisstream/collector';
 import { liveConnect } from '@/shared/api/aisstream/connect';
 import type { Connect, TimerId } from '@/shared/api/aisstream/transport';
-import { readApiKey, SNAPSHOT_VESSEL_LIMIT, SNAPSHOT_WINDOW_SECONDS } from '@/shared/config';
+import { readApiKey, SNAPSHOT_VESSEL_LIMIT } from '@/shared/config';
+
+import { parseSnapshotParams } from './snapshot-params';
 
 /**
  * Тексти помилок — ЛІТЕРАЛИ зі SPRINT-02:29, дослівно. Вони частина контракту
@@ -26,6 +28,7 @@ const ERROR_MESSAGES: Record<SnapshotErrorCode, string> = {
   provider_error: 'Джерело повернуло помилку',
   disconnected: "З'єднання з джерелом розірвано",
   internal: 'Внутрішня помилка сервера',
+  invalid_params: 'Некоректні параметри запиту',
 };
 
 export type SnapshotHandlerDeps = {
@@ -42,7 +45,7 @@ export type SnapshotHandlerDeps = {
   clearTimer?: (id: TimerId) => void;
 };
 
-function errorResponse(code: SnapshotErrorCode, at: number): Response {
+function errorResponse(code: SnapshotErrorCode, at: number, status = 502): Response {
   // 502 навіть для no_api_key, хоч це конфігурація, а не збій шлюзу: завдання
   // перелічує його серед кодів помилки одним списком, а тексти — контракт.
   return Response.json(
@@ -51,7 +54,7 @@ function errorResponse(code: SnapshotErrorCode, at: number): Response {
       attemptedAt: new Date(at).toISOString(),
       error: { code, message: ERROR_MESSAGES[code] },
     } satisfies SnapshotResponse,
-    { status: 502 },
+    { status },
   );
 }
 
@@ -68,6 +71,11 @@ export function createSnapshotHandler(
   } = deps;
 
   return async (request) => {
+    // Параметри — раніше за ключ: некоректний запит не має торкатися ні
+    // оточення, ні мережі. 400, а не 502: це вада запиту, а не джерела.
+    const settings = parseSnapshotParams(new URL(request.url).searchParams);
+    if (settings === null) return errorResponse('invalid_params', now(), 400);
+
     // Час спроби для no_api_key — момент перевірки: до збирача справа не
     // дійшла, і іншого `finishedAt`, ніж «зараз», у цієї спроби немає.
     const key = readApiKey(env);
@@ -80,7 +88,7 @@ export function createSnapshotHandler(
       result = await collect({
         connect,
         apiKey: key.apiKey,
-        windowMs: SNAPSHOT_WINDOW_SECONDS * 1000,
+        windowMs: settings.windowSeconds * 1000,
         limit: SNAPSHOT_VESSEL_LIMIT,
         toItem,
         now,
@@ -106,12 +114,13 @@ export function createSnapshotHandler(
       ok: true,
       vessels: result.items,
       collectedAt: new Date(result.finishedAt).toISOString(),
-      windowSeconds: SNAPSHOT_WINDOW_SECONDS,
+      windowSeconds: settings.windowSeconds,
       count: result.items.length,
       // Неповнота — похідна від причини завершення, а не окремий прапор
       // збирача: одне джерело правди на одну обставину.
       truncated: result.reason === 'limit_reached',
       reason: result.reason,
+      includeClassB: settings.includeClassB,
     } satisfies SnapshotResponse);
   };
 }

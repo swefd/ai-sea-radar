@@ -15,25 +15,28 @@ const VESSEL: Vessel = {
   speedKnots: 0, courseDeg: 48.2, timestamp: '2026-01-01T11:59:59.000Z', source: 'aisstream',
 };
 
-function harness(drive: (h: SocketHandlers) => void) {
+function harness(drive: (h: SocketHandlers) => void, query = '') {
   const timers: Array<() => void> = [];
+  const timerMs: number[] = [];
   let handlers: SocketHandlers | null = null;
-  const connect: Connect = (h) => { handlers = h; return { send: () => {}, close: () => {} }; };
+  let connects = 0;
+  const connect: Connect = (h) => { connects += 1; handlers = h; return { send: () => {}, close: () => {} }; };
   const handler = createSnapshotHandler({
     toItem: (raw) => ((raw as { v?: boolean }).v === true ? VESSEL : null),
     connect,
     now: () => NOW,
     env: ENV,
-    setTimer: (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; },
+    setTimer: (fn, ms) => { timers.push(fn); timerMs.push(ms); return 0 as unknown as ReturnType<typeof setTimeout>; },
     clearTimer: () => {},
   });
-  return async () => {
-    const pending = handler(new Request('http://127.0.0.1:3000/api/snapshot'));
+  const run = async () => {
+    const pending = handler(new Request(`http://127.0.0.1:3000/api/snapshot${query}`));
     await Promise.resolve();
     if (handlers !== null) drive(handlers);
     for (const fn of timers) fn();
     return pending;
   };
+  return Object.assign(run, { get connects() { return connects; }, timerMs });
 }
 
 test('успіх: HTTP 200 і фінальна форма з метаданими', async () => {
@@ -47,7 +50,34 @@ test('успіх: HTTP 200 і фінальна форма з метаданим�
     count: 1,
     truncated: false,
     reason: 'window_elapsed',
+    includeClassB: false,
   });
+});
+
+test('window=120&classB=1: вікно 120 000 мс у таймері, у відповіді 120 і includeClassB', async () => {
+  const run = harness((h) => { h.onOpen(); }, '?window=120&classB=1');
+  const response = await run();
+  expect(run.timerMs).toEqual([120_000]);
+  expect(await response.json()).toMatchObject({ ok: true, windowSeconds: 120, includeClassB: true });
+});
+
+test('некоректні параметри: HTTP 400, invalid_params, мережі не торкалися', async () => {
+  const run = harness(() => {}, '?window=99999');
+  const response = await run();
+  expect(response.status).toBe(400);
+  expect(run.connects).toBe(0);
+  expect(await response.json()).toEqual({
+    ok: false,
+    attemptedAt: '2026-01-01T12:00:00.000Z',
+    error: { code: 'invalid_params', message: 'Некоректні параметри запиту' },
+  });
+});
+
+test('некоректні параметри перевіряються раніше за ключ', async () => {
+  const handler = createSnapshotHandler({ toItem: () => null, env: {}, now: () => NOW });
+  const response = await handler(new Request('http://127.0.0.1:3000/api/snapshot?classB=2'));
+  expect(response.status).toBe(400);
+  expect((await response.json() as { error: { code: string } }).error.code).toBe('invalid_params');
 });
 
 test('порожній успіх: vessels [], count 0', async () => {
