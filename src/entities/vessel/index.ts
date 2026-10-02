@@ -23,7 +23,7 @@
 // не дивиться.
 
 export type { Vessel, VesselSource } from './model/vessel';
-export type { SnapshotErrorCode, SnapshotResponse } from './model/snapshot-response';
+export type { SnapshotDiagnostics, SnapshotErrorCode, SnapshotResponse } from './model/snapshot-response';
 
 // Демонстраційний флот віддається МАРШРУТАМИ й чистою функцією кроку, а не
 // готовим масивом суден: із B-05 судно — похідне від маршруту й номера тіка.

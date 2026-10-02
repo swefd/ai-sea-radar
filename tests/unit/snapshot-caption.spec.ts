@@ -13,6 +13,7 @@ const BASE = {
   truncated: false,
   reason: 'window_elapsed' as const,
   includeClassB: false,
+  diagnostics: { connectMs: 0, messages: 0, rejected: 0, byType: {} },
 };
 
 test('успіх: підпис дослівно', () => {

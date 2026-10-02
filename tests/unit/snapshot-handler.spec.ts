@@ -51,6 +51,7 @@ test('успіх: HTTP 200 і фінальна форма з метаданим�
     truncated: false,
     reason: 'window_elapsed',
     includeClassB: false,
+    diagnostics: { connectMs: 0, messages: 1, rejected: 0, byType: { other: 1 } },
   });
 });
 
@@ -70,6 +71,7 @@ test('некоректні параметри: HTTP 400, invalid_params, мер�
     ok: false,
     attemptedAt: '2026-01-01T12:00:00.000Z',
     error: { code: 'invalid_params', message: 'Некоректні параметри запиту' },
+    diagnostics: null,
   });
 });
 
@@ -94,23 +96,35 @@ test('без ключа: HTTP 502, no_api_key, текст дослівно', asy
     ok: false,
     attemptedAt: '2026-01-01T12:00:00.000Z',
     error: { code: 'no_api_key', message: 'Ключ AISStream не налаштовано' },
+    diagnostics: null,
   });
 });
 
-for (const [label, drive, code, message] of [
-  ['помилка до відкриття', (h: SocketHandlers) => h.onError(), 'connect_failed', 'Не вдалося підключитися до джерела'],
-  ['обрив після підписки (error, потім close)', (h: SocketHandlers) => { h.onOpen(); h.onError(); h.onClose(); }, 'disconnected', "З'єднання з джерелом розірвано"],
-  ['розрив після підписки', (h: SocketHandlers) => { h.onOpen(); h.onClose(); }, 'disconnected', "З'єднання з джерелом розірвано"],
-  ['помилка провайдера кадром', (h: SocketHandlers) => { h.onOpen(); h.onMessage('{"error":"Api Key Is Not Valid"}'); }, 'provider_error', 'Джерело повернуло помилку'],
+const NOT_OPENED = { connectMs: null, messages: 0, rejected: 0, byType: {} };
+const OPENED_SILENT = { connectMs: 0, messages: 0, rejected: 0, byType: {} };
+
+for (const [label, drive, code, message, diagnostics] of [
+  ['помилка до відкриття', (h: SocketHandlers) => h.onError(), 'connect_failed', 'Не вдалося підключитися до джерела', NOT_OPENED],
+  ['обрив після підписки (error, потім close)', (h: SocketHandlers) => { h.onOpen(); h.onError(); h.onClose(); }, 'disconnected', "З'єднання з джерелом розірвано", OPENED_SILENT],
+  ['розрив після підписки', (h: SocketHandlers) => { h.onOpen(); h.onClose(); }, 'disconnected', "З'єднання з джерелом розірвано", OPENED_SILENT],
+  ['помилка провайдера кадром', (h: SocketHandlers) => { h.onOpen(); h.onMessage('{"error":"Api Key Is Not Valid"}'); }, 'provider_error', 'Джерело повернуло помилку',
+    { connectMs: 0, messages: 1, rejected: 0, byType: { other: 1 } }],
 ] as const) {
   test(`${label}: HTTP 502, ${code}`, async () => {
     const response = await harness(drive)();
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({
-      ok: false, attemptedAt: '2026-01-01T12:00:00.000Z', error: { code, message },
+      ok: false, attemptedAt: '2026-01-01T12:00:00.000Z', error: { code, message }, diagnostics,
     });
   });
 }
+
+test('ключ не потрапляє ні в 400, ні в діагностику', async () => {
+  const bad = await harness(() => {}, '?window=1')();
+  expect(await bad.text()).not.toContain(ENV.AISSTREAM_API_KEY);
+  const ok = await harness((h) => { h.onOpen(); h.onMessage('{"v":true}'); })();
+  expect(await ok.text()).not.toContain(ENV.AISSTREAM_API_KEY);
+});
 
 test('ключ не потрапляє у відповідь', async () => {
   const response = await harness((h) => { h.onOpen(); h.onClose(); })();
@@ -173,6 +187,7 @@ test('attemptedAt помилки — час годинника в момент �
     ok: false,
     attemptedAt: '2026-01-01T12:00:04.000Z',
     error: { code: 'disconnected', message: "З'єднання з джерелом розірвано" },
+    diagnostics: OPENED_SILENT,
   });
 });
 
@@ -222,6 +237,7 @@ test('скасування запиту: сокет закрито, таймер
     ok: false,
     attemptedAt: '2026-01-01T12:00:00.000Z',
     error: { code: 'internal', message: 'Внутрішня помилка сервера' },
+    diagnostics: { connectMs: 0, messages: 1, rejected: 0, byType: { other: 1 } },
   });
   expect(closes).toBe(1);
   expect(cleared).toBe(1);
