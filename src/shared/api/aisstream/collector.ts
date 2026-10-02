@@ -45,6 +45,12 @@ type Outcome<T> =
   | { kind: 'done'; items: T[]; reason: 'window_elapsed' | 'limit_reached' }
   | { kind: 'error'; code: ReadErrorCode };
 
+/** Кадр помилки джерела: об'єкт із рядковим полем `error`. */
+function isProviderError(raw: unknown): boolean {
+  return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+    && typeof (raw as { error?: unknown }).error === 'string';
+}
+
 export function collect<T extends Collectable>(options: CollectOptions<T>): Promise<CollectResult<T>> {
   const { connect, apiKey, windowMs, limit, toItem, now, setTimer, clearTimer, signal } = options;
 
@@ -156,6 +162,16 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
             return;
           }
 
+          // Помилку AISStream шле КАДРОМ `{ "error": "..." }`, а не подією
+          // сокета (модель ModelError документації джерела). Без цієї гілки
+          // кадр ішов би в toItem → null і пропадав мовчки, а за живого
+          // з'єднання спроба віддала б частковий набір як успіх (F2, B-17;
+          // SPRINT-03:52). Текст помилки не зберігається — SPRINT-02:29.
+          if (isProviderError(raw)) {
+            settle({ kind: 'error', code: 'provider_error' });
+            return;
+          }
+
           // Помилка в перетворювачі — вада нашого коду, а не джерела; кидок із
           // обробника сокета пішов би повз проміс. Тому `internal`, чесно.
           let item: T | null;
@@ -171,12 +187,15 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
         },
 
         // До відкриття — не дійшли до джерела: `connect_failed` негайно
-        // (SPRINT-02:29). Після — джерело відповіло помилкою. У жодному разі
-        // вже зібране не повертається (SPRINT-02:92, третя пастка).
-        onError: () => settle({
-          kind: 'error',
-          code: opened ? 'provider_error' : 'connect_failed',
-        }),
+        // (SPRINT-02:29). ПІСЛЯ відкриття подія `error` — збій транспорту, і
+        // WebSocket за нею завжди шле `close` (виміряно на Node 24.21:
+        // обрив TCP дає `error → close(1006)`). Класифікує саме `onClose`:
+        // інакше обрив після підписки читався б як «джерело повернуло
+        // помилку», а не «з'єднання розірвано» (F1, B-17). Якщо `close` не
+        // прийде, завершить таймер вікна.
+        onError: () => {
+          if (!opened) settle({ kind: 'error', code: 'connect_failed' });
+        },
 
         // Закриття ДО підписки — не дійшли; ПІСЛЯ — розірвали. Дослівно :29.
         onClose: () => settle({

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 B-01 delivered the skeleton: `package.json`, `tsconfig.json`, `next.config.ts`, `.nvmrc`, `.gitignore`, `app/layout.tsx`, `app/page.tsx`, a lock file, and a git repo on `main`. B-02 onward extends it — do not re-scaffold. The verify layer (`scripts/verify/`, `.claude/hooks/`, `.claude/settings.json`) came after B-02; it is working method, not a backlog item — see "Перевірка".
 
-Release R1 (B-01…B-07) is closed by `docs/checkpoints/CHECKPOINT-01.md`. Release R2 (B-08…B-13) is closed by `docs/checkpoints/CHECKPOINT-04.md`. SPRINT-03 (R3, R4) is next; its work lives on the unmerged branch `worktree-sprint-03`.
+Release R1 (B-01…B-07) is closed by `docs/checkpoints/CHECKPOINT-01.md`. Release R2 (B-08…B-13) is closed by `docs/checkpoints/CHECKPOINT-04.md`. Release R3 (B-14…B-17) is closed by `docs/checkpoints/CHECKPOINT-05.md` on branch `sprint-03`. R4 (`SPRINT-03b-CHANGE-REQUEST.md`) is next.
 
 ## What Sea Radar is
 
@@ -17,12 +17,12 @@ A local web app for a maritime training centre: a map of the Dover Strait with s
 - `PROJECT_BRIEF.md` — the client contract: user stories US-01…US-10 with acceptance criteria.
 - `SPRINT-01.md` — release R1, items B-01…B-07, covering US-01…US-04; closed. Its agreed values still hold.
 - `SPRINT-02.md` — release R2, items B-08…B-13, covering US-05…US-08; closed. Part A is what to build; Part B is the working method.
-- `SPRINT-03.md`, `SPRINT-03b-CHANGE-REQUEST.md` — releases R3 and R4; next, not merged here.
+- `SPRINT-03.md` — release R3, B-14…B-17, US-09; closed. `SPRINT-03b-CHANGE-REQUEST.md` — R4; next.
 - `ABOUT.md` — how the course and its deliverables are organised.
 
 Later sprint files are handed over **one at a time, deliberately**. Build only what is in the folder; do not design for requirements that have not arrived. Read the task file itself, never a summary of it.
 
-Checkpoints go in `docs/checkpoints/CHECKPOINT-0N.md`, following `docs/checkpoints/TEMPLATE.md`. The folder holds CHECKPOINT-01 and CHECKPOINT-04; `TEMPLATE.md` is still absent — it arrives with the course materials, so do not invent one. What the verify layer owes that record is drafted in `docs/context/verify-layer.md`.
+Checkpoints go in `docs/checkpoints/CHECKPOINT-0N.md`, following `docs/checkpoints/TEMPLATE.md`. The folder holds CHECKPOINT-01, -02, -04 and -05; `TEMPLATE.md` is still absent — it arrives with the course materials, so do not invent one. What the verify layer owes that record is drafted in `docs/context/verify-layer.md`.
 
 ## Worked examples live in `reference/` — check there before writing from scratch
 
@@ -147,4 +147,4 @@ Never read or print secrets. The AISStream key must not reach source, delivered 
 
 ## Working method
 
-One or two requests per backlog item, each carrying: the boundaries, the check that proves it done, and a pointer to the task file. Plan B-01…B-04 before the first edit, with no edits during planning. After each item: show the diff against the task, change no code, and separate what a test proved from what was only checked visually — then accept, return, or stop. Movement this sprint is verified visually; automated movement tests with controlled time are R3, and the checkpoint record says so.
+One or two requests per backlog item, each carrying: the boundaries, the check that proves it done, and a pointer to the task file. Plan B-01…B-04 before the first edit, with no edits during planning. After each item: show the diff against the task, change no code, and separate what a test proved from what was only checked visually — then accept, return, or stop. Since R3, movement is proven by automated tests with `page.clock` (`tests/e2e/movement.spec.ts`), not only by eye.
