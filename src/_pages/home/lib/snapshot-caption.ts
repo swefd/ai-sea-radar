@@ -10,10 +10,9 @@
 import { formatTimestamp, type SnapshotResponse } from '@/entities/vessel';
 import { SNAPSHOT_VESSEL_LIMIT } from '@/shared/config';
 
-// Причина для стану помилки, коли сервер не дав тіла зрозумілої форми. Не
-// з переліку SPRINT-02:29 (там коди сервера), а рішення плану SPRINT-03: той
-// самий текст, який R4 пізніше пише в рядку спроби, тож живе він тут, поруч
-// з іншими текстами панелі.
+// Причина, коли сервер не дав тіла зрозумілої форми. Не з переліку
+// SPRINT-02:29 (там коди сервера), а рішення плану SPRINT-03; з R4 його пише
+// рядок спроби (`attempt-line.ts`). Живе тут, поруч з іншими текстами панелі.
 export const NO_SERVER_RESPONSE = 'Немає відповіді сервера';
 
 export type SnapshotSuccess = Extract<SnapshotResponse, { ok: true }>;
