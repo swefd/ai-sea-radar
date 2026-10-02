@@ -123,7 +123,7 @@ npx playwright test --project=unit --project=e2e     418 passed (13.7s)
   movement.spec.ts 3 · select.spec.ts 4 · snapshot.spec.ts 6 · tile-cache.spec.ts 2
 ```
 
-Про `npm run verify:checkpoint` — §3.1 нижче.
+Вивід `npm run verify:checkpoint` — §3.1 нижче.
 
 **Що довів кожен файл:**
 
@@ -149,12 +149,26 @@ npx playwright test --project=unit --project=e2e     418 passed (13.7s)
 
 ### 3.1. `verify:checkpoint`
 
-**Не запускався.** На момент запису порт 127.0.0.1:3000 займав сторонній Docker-контейнер
-(не Sea Radar), і рядок `e2e` перевіряв би його замість цього дерева (§1). Людина
-доручила злиття без цього прогону. Код після `89bd5eb` не змінювався — у коміті запису
-лише документи, — тож вердикт `verify:full` вище чинний для коду; швидкий рівень
-`npm run verify` на дереві з цим записом — 6 × PASSED. Прогін `verify:checkpoint` лишається
-за людиною: звільнити порт 3000 і запустити його на `main` після злиття.
+Прогін на `main` після злиття, коміт `d4deda7`, Node **v24.21.0**, 2026-10-02:
+
+```
+npm run verify:checkpoint                            EXIT=0
+PASSED      typecheck         1135 мс
+PASSED      lint              2931 мс
+PASSED      unit             12311 мс
+PASSED      no-ref-imports     107 мс
+PASSED      no-secrets         115 мс
+PASSED      deps-allowlist      43 мс
+PASSED      build             3972 мс
+PASSED      e2e               9247 мс
+hash bf692cec1b31, 195 файлів
+```
+
+Жодного `SKIPPED`. Першу спробу на тому самому дереві рядок `e2e` провалив за 61 с, не
+запустивши жодного тесту: порт 127.0.0.1:3000 займав сторонній Docker-контейнер (не
+Sea Radar, відповідав JSON-404), і `next dev` не зміг стати на цей порт — Playwright
+звітував `Timed out waiting 60000ms from config.webServer`. Після звільнення порту — вивід
+вище. Хеш рахується по дереву без цього абзацу: запис доданий після прогону.
 
 ### 3.2. Мутаційні перевірки
 
