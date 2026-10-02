@@ -64,3 +64,13 @@ test('бокс береться з узгодженого регіону, а н�
   expect(flat).toHaveLength(4);
   expect(new Set(flat).size).toBe(4); // жодне число не продубльоване помилково
 });
+
+test('типи повідомлень: без опції — лише PositionReport (як у R2)', () => {
+  const sent = JSON.parse(buildSubscription(KEY)) as { FilterMessageTypes: string[] };
+  expect(sent.FilterMessageTypes).toEqual(['PositionReport']);
+});
+
+test('includeClassB — рівно два типи', () => {
+  const sent = JSON.parse(buildSubscription(KEY, { includeClassB: true })) as { FilterMessageTypes: string[] };
+  expect(sent.FilterMessageTypes).toEqual(['PositionReport', 'StandardClassBPositionReport']);
+});

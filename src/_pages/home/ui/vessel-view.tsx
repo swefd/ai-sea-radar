@@ -9,10 +9,12 @@ import {
   fleetAtTick,
   lastFleetTick,
 } from '@/entities/vessel';
+import { DEFAULT_SNAPSHOT_SETTINGS, type SnapshotSettings } from '@/shared/config';
 
 import { attemptLine, type Attempt } from '../lib/attempt-line';
 import { fetchSnapshot } from '../lib/fetch-snapshot';
 import { snapshotCaption, type SnapshotSuccess } from '../lib/snapshot-caption';
+import { diagnosticsLine } from '../lib/snapshot-details';
 import { DoverStraitMap } from './dover-strait-map';
 import { VesselPanel } from './vessel-panel';
 
@@ -52,14 +54,43 @@ const LAST_TICK = lastFleetTick(DEMO_ROUTES);
  */
 type Shown = { kind: 'demo' } | { kind: 'snapshot'; response: SnapshotSuccess };
 
+/**
+ * Рядок «Докладно» — діагностика ОСТАННЬОЇ спроби, як і рядок спроби над ним.
+ * Для помилки — лише коли з'єднання відкрилося (специфікація 2026-09-29 §5.4):
+ * рядок із самих нулів нічого не пояснює. `?? null` — захист від сервера без
+ * поля (стара збірка під dev).
+ */
+function attemptDetails(attempt: Attempt): string | null {
+  if (attempt.kind !== 'done' || attempt.response === null) return null;
+  const { response } = attempt;
+  if (response.ok) {
+    return response.diagnostics ? diagnosticsLine(response.diagnostics, response.count) : null;
+  }
+  const diagnostics = response.diagnostics ?? null;
+  return diagnostics !== null && diagnostics.connectMs !== null ? diagnosticsLine(diagnostics, null) : null;
+}
+
 export function VesselView() {
   const [selectedVesselId, setSelectedVesselId] = useState<string | null>(null);
   const [shown, setShown] = useState<Shown>({ kind: 'demo' });
   const [attempt, setAttempt] = useState<Attempt>({ kind: 'none' });
 
+  // Налаштування наступної спроби. Лише стан компонента: між запусками не
+  // зберігаються (PROJECT_BRIEF:113), після оновлення — знову типові.
+  const [settings, setSettings] = useState<SnapshotSettings>(DEFAULT_SNAPSHOT_SETTINGS);
+
   // Команда карті «до початкового виду» — лічильник, а не прапорець (див.
   // `LeafletMapProps.resetViewKey`).
   const [resetViewKey, setResetViewKey] = useState(0);
+
+  // Контролер ПОТОЧНОЇ спроби. Ref, а не стан: він нічого не рендерить. Він же
+  // — ознака «чия це відповідь»: спроба, чий контролер уже не поточний
+  // (скасовано або розмонтовано), свій результат не записує.
+  const attemptRef = useRef<AbortController | null>(null);
+
+  // Розмонтування (hot reload, закриття) обриває запит: інакше сервер тримав
+  // би сокет до кінця вікна — а воно буває й 5 хвилин.
+  useEffect(() => () => attemptRef.current?.abort(), []);
 
   // ЄДИНА ЗАКОННА ФОРМА моменту старту, і це виміряно проти справжнього конфігу
   // цього репозиторію, а не обрано на смак: `eslint-plugin-react-hooks@7.1.1`
@@ -134,18 +165,28 @@ export function VesselView() {
   //
   // Набір, підпис і вибір на час запиту НЕ чіпаються (CR :26): картка
   // закривається лише вибором іншого судна, а судно лишається на карті.
-  // Повторне натискання під час збору неможливе — кнопка `disabled`, поки
-  // спроба `loading`, і це єдиний захист: другого запиту обробник не очікує.
-  // З тієї ж причини `shown` із замикання актуальний — інших записувачів у
-  // нього немає.
+  // Повторне натискання під час збору неможливе — у `loading` кнопки
+  // завантаження немає, на її місці «Скасувати» (рішення власника 2026-10-02,
+  // що замінило `disabled`). Та й без цього відповідь чужої спроби не
+  // пишеться: її відсікає `attemptRef`. З тієї ж причини `shown` із замикання
+  // актуальний — поки спроба поточна, інших записувачів у нього немає.
   //
   // Усі `set*` після `await` стоять в одному синхронному відрізку, тож React
   // зводить їх в один рендер: карта, картка, підпис і рядок спроби
   // змінюються разом — це і є «атомарно» з CR :28.
   async function handleLoad() {
+    const controller = new AbortController();
+    attemptRef.current = controller;
     setAttempt({ kind: 'loading' });
 
-    const response = await fetchSnapshot();
+    const response = await fetchSnapshot(settings, controller.signal);
+
+    // Відповідь чужої спроби — ігнор. Стан уже записав той, хто її обірвав.
+    if (attemptRef.current !== controller) return;
+    attemptRef.current = null;
+
+    if (response === 'cancelled') return;
+
     setAttempt({ kind: 'done', response });
 
     // Лише непорожній успіх замінює набір (CR :27, :28).
@@ -169,6 +210,16 @@ export function VesselView() {
     // Набір замінюється цілком, без злиття з попереднім (CR :30): судна, якого
     // немає в новій відповіді, на карті більше немає — і це не «вийшло з району».
     setShown({ kind: 'snapshot', response });
+  }
+
+  // Стан пише САМ обробник, а не гілка 'cancelled' у handleLoad: відповідь
+  // обірваного запиту може й не прийти, а людина має побачити результат одразу.
+  // Скасування — теж спроба без результату, тож набір і підпис лишаються
+  // (CR :27): змінюється лише рядок спроби.
+  function handleCancel() {
+    attemptRef.current?.abort();
+    attemptRef.current = null;
+    setAttempt({ kind: 'cancelled' });
   }
 
   // Усе видиме — похідне від двох станів і двох чисел. Карта й картка читають
@@ -199,7 +250,11 @@ export function VesselView() {
         caption={caption}
         attempt={attemptLine(attempt)}
         loading={attempt.kind === 'loading'}
+        settings={settings}
+        onSettingsChange={setSettings}
+        details={attemptDetails(attempt)}
         onLoad={handleLoad}
+        onCancel={handleCancel}
       />
     </>
   );

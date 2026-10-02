@@ -14,13 +14,19 @@ import { formatTimestamp, type SnapshotResponse } from '@/entities/vessel';
 
 import { NO_SERVER_RESPONSE } from './snapshot-caption';
 
-/** `null` у `done` — відповіді немає або тіло не розібране (`fetchSnapshot`). */
+/**
+ * `null` у `done` — відповіді немає або тіло не розібране (`fetchSnapshot`).
+ * `cancelled` — людина сама натиснула «Скасувати»: це не помилка й не
+ * відповідь, тож окремий варіант (специфікація 2026-09-29 §5.2).
+ */
 export type Attempt =
   | { kind: 'none' }
   | { kind: 'loading' }
+  | { kind: 'cancelled' }
   | { kind: 'done'; response: SnapshotResponse | null };
 
 const LOADING_LINE = 'Завантаження…';
+const CANCELLED_LINE = 'Завантаження скасовано';
 const FAILED = 'не вдалося отримати дані';
 
 export function attemptLine(attempt: Attempt): string | null {
@@ -29,6 +35,8 @@ export function attemptLine(attempt: Attempt): string | null {
       return null;
     case 'loading':
       return LOADING_LINE;
+    case 'cancelled':
+      return CANCELLED_LINE;
     case 'done': {
       const { response } = attempt;
       if (response === null) {

@@ -14,6 +14,8 @@ const SUCCESS = {
   count: 3,
   truncated: false,
   reason: 'window_elapsed' as const,
+  includeClassB: false,
+  diagnostics: { connectMs: 200, messages: 3, rejected: 0, byType: { PositionReport: 3 } },
 };
 
 test('до першого натискання рядка немає', () => {
@@ -47,9 +49,16 @@ test('помилка: час attemptedAt і message з відповіді', () =
         ok: false,
         attemptedAt: '2026-01-01T12:02:03.000Z',
         error: { code: 'no_api_key', message: 'Ключ AISStream не налаштовано' },
+        diagnostics: null,
       },
     }),
   ).toBe('Спроба 12:02:03 UTC: не вдалося отримати дані: Ключ AISStream не налаштовано');
+});
+
+test('скасовано людиною: без часу, не помилка', () => {
+  // Текст — рішення власника в main (специфікація 2026-09-29 §5.2); під R4 це
+  // рядок спроби, а не підпис: набір на карті скасування не змінює.
+  expect(attemptLine({ kind: 'cancelled' })).toBe('Завантаження скасовано');
 });
 
 test('немає відповіді: без часу', () => {

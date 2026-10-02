@@ -46,11 +46,15 @@
   width: 19rem;
   max-width: calc(100vw - 2.5rem);
 
-  /* НЕ на всю висоту — вимога замовника, і звідси ж `max-height` замість
-   * `height`: панель рівно така, якої потребує її вміст, і перестає рости,
-   * діставши стелі. 60vh лишає видимою карту і згори, і знизу, тож відчуття
-   * накладеного, а не вбудованого блока тримається на будь-якому екрані. */
-  max-height: 60vh;
+  /* НА ВСЮ ВИСОТУ — рішення власника 2026-10-02, що замінило колишнє «не на
+   * всю висоту» зі стелею 60vh: під стелею вміст гортався всередині, і
+   * налаштування, кнопка, підпис і картка не вміщалися разом.
+   *
+   * `bottom` — не дзеркало `top`, а виміряне значення з мобільного правила
+   * нижче: унизу праворуч Leaflet малює атрибуцію OpenStreetMap, і панель на
+   * всю висоту накрила б її так само, як нижній аркуш. Читність атрибуції —
+   * умова ліцензії ODbL, а не оформлення. */
+  bottom: 2.25rem;
 
   display: flex;
   flex-direction: column;
@@ -125,44 +129,124 @@
   }
 }
 
-/* Шапка видима завжди — і розгорнутою панеллю, і згорнутою. `flex-shrink: 0`
- * не дає їй стиснутися, коли картка заповнила всю дозволену висоту. */
-.header {
+/* Секції панелі. Відступи більші, ніж були, а роздільник ледь помітний —
+ * групу тримає простір, а не лінія. `flex-shrink: 0`: прокручується лише
+ * `.body` з карткою, а кнопка й підпис стоять на місці. */
+.section {
   display: flex;
+  flex-direction: column;
   flex-shrink: 0;
+  gap: 0.875rem;
+
+  box-sizing: border-box;
+  padding: 1.125rem 1.25rem;
+}
+
+.section + .section,
+.body:not(:empty) {
+  border-top: 1px solid var(--hairline);
+}
+
+.sectionHead {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-sm);
+}
 
-  box-sizing: border-box;
-  padding: 0.875rem 1rem;
+/* Заголовок секції: дрібний, розріджений, приглушений. Великі літери тут
+ * доречні, на відміну від підписів картки: слово одне-два, і читають його як
+ * мітку, а не як текст. */
+.eyebrow {
+  margin: 0;
+
+  color: var(--faint);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 /* Підпис джерела видно завжди, незалежно від вибору, — це вимога US-06, а не
  * оформлення картки. */
 .source {
   margin: 0;
-  min-width: 0;
 
   color: var(--ink);
   font-size: 0.875rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
+  line-height: 1.6;
+}
 
-  /* Підпис знімка (B-13) — ~80 символів, і він ПЕРЕНОСИТЬСЯ, а не обрізається
-   * трикрапкою: «вибірка неповна» стоїть наприкінці, і саме її обрізала б
-   * трикрапка — а це те, що замовник вимагає бачити завжди (SPRINT-02:11).
-   * Кнопку згортання за край не виштовхує `min-width: 0` вище: підпис
-   * стискається й переноситься, кнопка лишається своєї ширини. */
+/* Сегмент між « · » не розривається: `inline-block` переносить рядок лише
+ * МІЖ сегментами, тож «отримано 12:00:00 UTC» читається цілим. Сегмент,
+ * довший за панель, таки ламається всередині (`max-width` + `overflow-wrap`),
+ * а не вилазить за край — «вибірка неповна» має лишатися видимою
+ * (SPRINT-02:11). */
+.segment {
+  display: inline-block;
+  max-width: 100%;
   overflow-wrap: anywhere;
 }
 
-/* Рядок кнопки завантаження — над шапкою, поза `.body`, тож видимий і
- * згорнутою панеллю. Нижній відступ нульовий: шапка під ним має власний. */
-.actions {
-  flex-shrink: 0;
-  box-sizing: border-box;
-  padding: 0.875rem 1rem 0;
+/* Налаштування спроби — над кнопкою: їх вибирають ДО натискання. `fieldset`
+ * без рамки: групування тут семантичне (один `disabled` на все), а не видиме. */
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+
+  margin: 0;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+
+  color: var(--ink);
+  font-size: 0.8125rem;
+}
+
+.settings:disabled {
+  opacity: 0.45;
+}
+
+.settingRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  white-space: nowrap;
+}
+
+.settingValue {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.slider {
+  display: block;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--contact);
+}
+
+/* Сім міток на 17rem — дрібний шрифт і рівні проміжки; вирівнювання під
+ * центри поділок браузера не гарантується, тому це підказка, а не шкала. */
+.ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -0.25rem;
+  color: var(--faint);
+  font-size: 0.6875rem;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 0.25rem;
+  cursor: pointer;
+}
+
+.checkbox input {
+  accent-color: var(--contact);
 }
 
 /* Ширина — вся ширина панелі, а не ширина тексту: кнопка одна, і панель
@@ -171,10 +255,10 @@
   display: block;
   width: 100%;
   box-sizing: border-box;
-  padding: 0.5rem 0.75rem;
+  padding: 0.625rem 0.75rem;
 
   border: 1px solid rgba(62, 230, 196, 0.42);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: rgba(62, 230, 196, 0.1);
 
   color: var(--contact);
@@ -190,7 +274,7 @@
     opacity 160ms ease;
 }
 
-.load:hover:not(:disabled) {
+.load:hover {
   background: rgba(62, 230, 196, 0.18);
 }
 
@@ -200,22 +284,27 @@
   outline-offset: 2px;
 }
 
-/* Заблокована під час збору. Вигляд — приглушений, а не прихований: людина
- * має бачити, що дія є, але зараз недоступна (SPRINT-02:11). */
-.load:disabled {
-  border-color: var(--edge);
-  background: rgba(232, 236, 248, 0.04);
-  color: var(--dim);
-  cursor: progress;
+/* Під час збору та сама кнопка — «Скасувати» (специфікація 2026-09-29 §5.1).
+ * Колір `--locked`, а не `--contact`: це інша дія, і сплутати її з
+ * завантаженням не можна, хоч місце й розмір ті самі. */
+.cancel {
+  border-color: rgba(255, 95, 210, 0.42);
+  background: transparent;
+  color: var(--locked);
 }
 
-/* Рядок результату спроби — під шапкою, поза `.body`. Нижній відступ малий:
- * під ним завжди стоїть підказка, а вже вона закриває блок повним відступом. */
+.cancel:hover {
+  background: rgba(255, 95, 210, 0.12);
+}
+
+.cancel:focus-visible {
+  outline-color: var(--locked);
+}
+
+/* Рядок результату спроби — під підписом у секції «Дані на карті», поза
+ * `.body`. Відступи між рядками секції дає сама секція. */
 .attempt {
-  flex-shrink: 0;
   margin: 0;
-  box-sizing: border-box;
-  padding: 0 1rem 0.5rem;
 
   color: var(--ink);
   font-size: 0.8125rem;
@@ -223,18 +312,51 @@
   overflow-wrap: anywhere;
 }
 
-/* Постійна підказка (CR :32) — приглушена: вона довідкова, а не результат дії.
- * Нижній відступ є завжди: під нею або картка, або кінець панелі. */
+/* Постійна підказка (SPRINT-03b:32) — приглушена: вона довідкова, а не
+ * результат дії. */
 .hint {
-  flex-shrink: 0;
   margin: 0;
-  box-sizing: border-box;
-  padding: 0 1rem 0.875rem;
 
   color: var(--dim);
   font-size: 0.75rem;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+
+/* Смуга збору. Заповнення рухається кроком таймера (чверть секунди), а
+ * `transition` згладжує крок у рівний рух. Колір — `--contact`, той самий,
+ * що в кнопки завантаження: це її наслідок, а не новий стан даних. */
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(160, 190, 255, 0.14);
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--contact);
+  transition: width 250ms linear;
+}
+
+.progressText {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin: 0;
+
+  color: var(--dim);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .toggle {
@@ -288,11 +410,15 @@
  * перевищила б власний `max-height` замість того, щоб віддати різницю
  * прокручуванню. */
 .body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1.125rem;
   min-height: 0;
   overflow-y: auto;
 
   box-sizing: border-box;
-  padding: 0 1rem 1rem;
+  padding: 1.125rem 1.25rem;
 
   /* Прокручування, що дійшло до краю картки, НЕ передається карті під панеллю:
    * без цього рядка колесо миші над карткою дотягувалося б до Leaflet і міняло
@@ -316,11 +442,37 @@
   padding: 0;
 }
 
+.cardSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+/* «Докладно» — останнім у тілі, під карткою, і притиснуте донизу: це довідка,
+ * до якої звертаються найрідше. Згортання панелі ховає його разом з тілом.
+ * Рядок діагностики — дрібний і приглушений: це довідка, не стан. */
+.details {
+  margin: auto 0 0;
+  color: var(--dim);
+  font-size: 0.75rem;
+}
+
+.details summary {
+  cursor: pointer;
+}
+
+.details p {
+  margin: 0.375rem 0 0;
+  overflow-wrap: anywhere;
+}
+
 /* Згорнута панель: вміст стискається до нуля й гасне, але лишається в DOM
  * (`aria-controls`, позиція прокручування — див. `vessel-panel.tsx`), а
- * `inert` знімає його з фокуса. Висота панелі тоді — рівно кнопка, шапка,
- * рядок спроби й підказка, хай скільки рядків займає підпис. */
+ * `inert` знімає його з фокуса. Висота панелі тоді — рівно секції знімка й
+ * даних на карті (з рядком спроби й підказкою), хай скільки рядків займає
+ * підпис. */
 .collapsed .body {
+  flex: 0 0 auto;
   max-height: 0;
   padding-top: 0;
   padding-bottom: 0;

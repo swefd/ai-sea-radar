@@ -25,9 +25,12 @@ export type CollectOptions<T extends Collectable> = {
   apiKey: string;
   windowMs: number;
   limit: number;
+  /** Передається в підписку як є. */
+  includeClassB?: boolean;
   /**
    * Перетворювач — ПАРАМЕТР: shared/ не імпортує entities/. `null` — «не валідна
-   * позиція», включно з SubscriptionConfirmation; збирач такі мовчки пропускає.
+   * позиція»; збирач такі пропускає й рахує відкинутими. SubscriptionConfirmation
+   * до перетворювача не доходить — він службовий і в діагностику не йде.
    */
   toItem: (raw: unknown) => T | null;
   now: () => number;
@@ -36,9 +39,27 @@ export type CollectOptions<T extends Collectable> = {
   signal?: AbortSignal;
 };
 
+/**
+ * Що сталося за спробу — для блоку «Докладно» (специфікація 2026-09-29 §3.2).
+ * Рахується в ОБОХ гілках результату: розрив після десяти повідомлень і розрив
+ * без жодного — різні історії, хоч суден в обох немає.
+ */
+export type CollectDiagnostics = {
+  connectMs: number | null;
+  messages: number;
+  rejected: number;
+  byType: Record<string, number>;
+};
+
+/**
+ * Типи, що стають ключами `byType`. Білий список, а не `MessageType` як є:
+ * це рядок провайдера, а сирий текст провайдера на екран не потрапляє.
+ */
+const KNOWN_MESSAGE_TYPES = new Set(['PositionReport', 'StandardClassBPositionReport']);
+
 export type CollectResult<T> =
-  | { kind: 'done'; items: T[]; reason: 'window_elapsed' | 'limit_reached'; finishedAt: number }
-  | { kind: 'error'; code: ReadErrorCode; finishedAt: number };
+  | { kind: 'done'; items: T[]; reason: 'window_elapsed' | 'limit_reached'; finishedAt: number; diagnostics: CollectDiagnostics }
+  | { kind: 'error'; code: ReadErrorCode; finishedAt: number; diagnostics: CollectDiagnostics };
 
 /** Результат без часу: `finishedAt` ставить лише `settle`, щоб жодна гілка його не забула. */
 type Outcome<T> =
@@ -52,7 +73,7 @@ function isProviderError(raw: unknown): boolean {
 }
 
 export function collect<T extends Collectable>(options: CollectOptions<T>): Promise<CollectResult<T>> {
-  const { connect, apiKey, windowMs, limit, toItem, now, setTimer, clearTimer, signal } = options;
+  const { connect, apiKey, windowMs, limit, includeClassB, toItem, now, setTimer, clearTimer, signal } = options;
 
   return new Promise<CollectResult<T>>((resolve) => {
     // ЄДИНИЙ сторож на всі шляхи виходу — пастка SPRINT-02:92 «проміс
@@ -64,6 +85,12 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
     let opened = false;
     let handle: SocketHandle | null = null;
     let timerId: TimerId | null = null;
+
+    const startedAt = now();
+    const diagnostics: CollectDiagnostics = { connectMs: null, messages: 0, rejected: 0, byType: {} };
+    const countType = (key: string) => {
+      diagnostics.byType[key] = (diagnostics.byType[key] ?? 0) + 1;
+    };
 
     // Одна позиція на id. Map, а не масив: заміна «цілком» — це просто set(),
     // і старий об'єкт не домішується до нового (ім'я null перемагає ім'я).
@@ -91,7 +118,12 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
 
       // Час — за переданим годинником у момент завершення (SPRINT-02:28), а
       // не в момент старту: з нього endpoint зробить collectedAt/attemptedAt.
-      resolve({ ...outcome, finishedAt: now() });
+      // Діагностика — копією: ніщо після завершення не змінить уже віддане.
+      resolve({
+        ...outcome,
+        finishedAt: now(),
+        diagnostics: { ...diagnostics, byType: { ...diagnostics.byType } },
+      });
     };
 
     /**
@@ -102,7 +134,7 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
     const subscribe = () => {
       if (subscribed || handle === null) return;
       try {
-        handle.send(buildSubscription(apiKey));
+        handle.send(buildSubscription(apiKey, { includeClassB }));
         subscribed = true;
       } catch {
         settle({ kind: 'error', code: 'connect_failed' });
@@ -147,6 +179,7 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
           // ПЕРШОЮ дією: джерело дає 3 секунди й мовчки закриває з'єднання,
           // якщо підписка не встигла.
           opened = true;
+          diagnostics.connectMs = now() - startedAt;
           subscribe();
         },
 
@@ -159,8 +192,19 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
           try {
             raw = JSON.parse(text);
           } catch {
+            diagnostics.messages += 1;
+            diagnostics.rejected += 1;
+            countType('other');
             return;
           }
+
+          const type = (raw as { MessageType?: unknown } | null)?.MessageType;
+          // Підтвердження підписки — службове, не дані: у лічильники не йде.
+          // Кадр помилки провайдера — повідомлення (`other`), але не
+          // «відкинуте»: він завершує спробу, а не губить позицію.
+          if (type === 'SubscriptionConfirmation') return;
+          diagnostics.messages += 1;
+          countType(typeof type === 'string' && KNOWN_MESSAGE_TYPES.has(type) ? type : 'other');
 
           // Помилку AISStream шле КАДРОМ `{ "error": "..." }`, а не подією
           // сокета (модель ModelError документації джерела). Без цієї гілки
@@ -181,7 +225,10 @@ export function collect<T extends Collectable>(options: CollectOptions<T>): Prom
             settle({ kind: 'error', code: 'internal' });
             return;
           }
-          if (item === null) return;
+          if (item === null) {
+            diagnostics.rejected += 1;
+            return;
+          }
 
           accept(item);
         },

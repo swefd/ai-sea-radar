@@ -45,6 +45,7 @@ const SUCCESS_OTHER = { ...SUCCESS_AGAIN, vessels: [{ ...SUCCESS_ONE.vessels[0],
 const SUCCESS_TRUNCATED = { ...SUCCESS_ONE, truncated: true, reason: 'limit_reached' };
 
 const BUTTON = 'Завантажити справжні позиції';
+const CANCEL = 'Скасувати';
 const DEMO_CAPTION = 'Демонстраційні дані';
 const CAPTION_1200 = 'AISStream · знімок за 15 с · отримано 12:00:00 UTC · суден: 1 · вибірка неповна';
 const HINT = 'Після оновлення сторінки знову показуються демонстраційні дані';
@@ -55,6 +56,10 @@ type Handler = (route: Route) => Promise<void>;
 
 function loadButton(page: Page) {
   return page.getByRole('button', { name: BUTTON });
+}
+
+function cancelButton(page: Page) {
+  return page.getByRole('button', { name: CANCEL });
 }
 
 /** Рядок результату спроби — єдиний `role="status"` на сторінці. */
@@ -127,7 +132,9 @@ async function open(page: Page, handlers: Handler | Handler[], { clock = false }
   }
   await blockExternal(page);
   let next = 0;
-  await page.route('**/api/snapshot', (route) => {
+  // Предикат за pathname, а не glob `**/api/snapshot`: glob закріплений у
+  // кінці, а клієнт шле `?window=…&classB=…`.
+  await page.route((url) => url.pathname === '/api/snapshot', (route) => {
     const handler = queue[next];
     next += 1;
     return handler === undefined ? route.abort() : handler(route);
@@ -192,7 +199,10 @@ test('повторне очікування: попередній набір н�
 
   await loadButton(page).click();
 
-  await expect(loadButton(page)).toBeDisabled();
+  // Удруге завантажити неможливо: кнопки завантаження в очікуванні немає, на
+  // її місці «Скасувати» (рішення власника 2026-10-02, замість `disabled`).
+  await expect(loadButton(page)).toHaveCount(0);
+  await expect(cancelButton(page)).toBeEnabled();
   await expect(attemptLine(page)).toHaveText('Завантаження…');
   await expect(page.locator(REAL)).toHaveCount(1);
   await expect(caption(page, CAPTION_1200)).toBeVisible();
@@ -202,6 +212,7 @@ test('повторне очікування: попередній набір н�
 
   await expect(attemptLine(page)).toHaveText('Спроба 12:01:00 UTC: отримано суден: 1');
   await expect(loadButton(page)).toBeEnabled();
+  await expect(cancelButton(page)).toHaveCount(0);
 });
 
 test('порожня відповідь 12:01:00 після успіху 12:00:00: набір і підпис збережені', async ({ page }) => {
@@ -382,4 +393,182 @@ test('підказка про оновлення сторінки є завжд�
 
   await expect(page.getByText(HINT, { exact: true })).toBeVisible();
   await expect(attemptLine(page)).toBeVisible();
+});
+
+// ── Налаштування знімка, «Скасувати», смуга збору, «Докладно» (main,
+// специфікація 2026-09-29) — під контрактом R4: скасування теж спроба без
+// результату, тож набір і підпис лишаються, змінюється лише рядок спроби.
+
+test('«Скасувати»: запит обірвано, набір і підпис збережені, "Завантаження скасовано"', async ({ page }) => {
+  const pending = held(SUCCESS_ONE, 200);
+  await open(page, [pending.handler]);
+
+  await loadButton(page).click();
+
+  const failed = page.waitForEvent('requestfailed', (r) => new URL(r.url()).pathname === '/api/snapshot');
+  await cancelButton(page).click();
+  await failed;
+
+  await expect(attemptLine(page)).toHaveText('Завантаження скасовано');
+  await expect(caption(page, DEMO_CAPTION)).toBeVisible();
+  await expect(page.locator(DEMO)).toHaveCount(3);
+  await expect(loadButton(page)).toBeEnabled();
+  await expect(cancelButton(page)).toHaveCount(0);
+});
+
+test('«Скасувати» після успіху: знімок лишається на карті', async ({ page }) => {
+  const pending = held(SUCCESS_AGAIN, 200);
+  await open(page, [json(SUCCESS_ONE, 200), pending.handler]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+
+  await loadButton(page).click();
+  await cancelButton(page).click();
+
+  await expect(attemptLine(page)).toHaveText('Завантаження скасовано');
+  await expect(caption(page, CAPTION_1200)).toBeVisible();
+  await expect(page.locator(REAL)).toHaveCount(1);
+});
+
+test('пізня відповідь після скасування не перезаписує стан', async ({ page }) => {
+  // Відповідь — справжнє судно: якби пізня відповідь записалась, воно з'явилось би.
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let done: () => void = () => {};
+  const finished = new Promise<void>((resolve) => { done = resolve; });
+  await open(page, [async (route) => {
+    await gate;
+    // Запит уже обірвано — `fulfill` кидає; це очікувано, а не провал.
+    await route.fulfill({ status: 200, json: SUCCESS_ONE }).catch(() => {});
+    done();
+  }]);
+
+  await loadButton(page).click();
+  await cancelButton(page).click();
+  await expect(attemptLine(page)).toHaveText('Завантаження скасовано');
+
+  release();
+  await finished;
+
+  await expect(attemptLine(page)).toHaveText('Завантаження скасовано');
+  await expect(page.locator(REAL)).toHaveCount(0);
+  await expect(caption(page, DEMO_CAPTION)).toBeVisible();
+});
+
+test('подвійний клік по «Завантажити» не скасовує власну спробу', async ({ page }) => {
+  // Кнопка одна: другий клік подвійного кліку влучає вже в «Скасувати».
+  const pending = held(SUCCESS_ONE, 200);
+  await open(page, [pending.handler]);
+
+  await loadButton(page).dblclick();
+  await expect(cancelButton(page)).toBeVisible();
+  await expect(attemptLine(page)).toHaveText('Завантаження…');
+
+  pending.release();
+  await expect(attemptLine(page)).toHaveText('Спроба 12:00:00 UTC: отримано суден: 1');
+  await expect(page.locator(REAL)).toHaveCount(1);
+});
+
+test('«Скасувати» видно лише під час завантаження', async ({ page }) => {
+  await open(page, [json(SUCCESS_ONE, 200)]);
+  await expect(cancelButton(page)).toHaveCount(0);
+});
+
+function snapshotRequests(page: Page) {
+  const urls: URL[] = [];
+  page.on('request', (r) => {
+    const url = new URL(r.url());
+    if (url.pathname === '/api/snapshot') urls.push(url);
+  });
+  return urls;
+}
+
+test('без дотику до налаштувань: window=15, classB=0', async ({ page }) => {
+  const urls = snapshotRequests(page);
+  await open(page, [json(SUCCESS_ONE, 200)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+  expect(urls.map((u) => u.search)).toEqual(['?window=15&classB=0']);
+});
+
+test('повзунок на 2 хв і клас B: параметри в запиті, підпис із відповіді', async ({ page }) => {
+  const urls = snapshotRequests(page);
+  await open(page, [json({ ...SUCCESS_ONE, windowSeconds: 120, includeClassB: true }, 200)]);
+
+  const slider = page.getByRole('slider', { name: 'Вікно збору' });
+  await slider.focus();
+  // Індекс 0 → 3 (15 → 30 → 60 → 120).
+  for (let i = 0; i < 3; i += 1) await page.keyboard.press('ArrowRight');
+  await expect(slider).toHaveAttribute('aria-valuetext', '2 хвилини');
+  await page.getByRole('checkbox', { name: 'Малі судна (клас B)' }).check();
+
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+  await expect(caption(page,
+    'AISStream · знімок за 120 с · отримано 12:00:00 UTC · суден: 1 · вибірка неповна · із малими суднами (клас B)',
+  )).toBeVisible();
+  expect(urls.map((u) => u.search)).toEqual(['?window=120&classB=1']);
+});
+
+test('налаштування заблоковані під час завантаження', async ({ page }) => {
+  const pending = held(SUCCESS_ONE, 200);
+  await open(page, [pending.handler]);
+
+  await loadButton(page).click();
+  await expect(page.getByRole('slider', { name: 'Вікно збору' })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: 'Малі судна (клас B)' })).toBeDisabled();
+  pending.release();
+  await expect(page.getByRole('slider', { name: 'Вікно збору' })).toBeEnabled();
+});
+
+// Смуга збору рахує вибране вікно браузерним годинником від натискання — це
+// оцінка, сервер свого прогресу не шле. `page.clock` тут не на паузі (карта
+// вантажиться чанком, що чекає таймерів), тож час іде й сам: звідси діапазон
+// «13 або 14 с» після стрибка на 13 с, а не одне число.
+test('смуга збору: лічильник секунд, стеля на вікні, зникає з відповіддю', async ({ page }) => {
+  const pending = held(SUCCESS_ONE, 200);
+  await open(page, [pending.handler], { clock: true });
+
+  const progress = page.getByRole('progressbar', { name: 'Збір позицій' });
+  await expect(progress).toHaveCount(0);
+
+  await loadButton(page).click();
+  await expect(progress).toBeVisible();
+  await expect(progress).toHaveAttribute('aria-valuemax', '15');
+
+  await page.clock.fastForward(13_000);
+  await expect(page.getByText(/^1[34] с із 15 с$/)).toBeVisible();
+
+  await page.clock.fastForward(10_000);
+  await expect(page.getByText('15 с із 15 с', { exact: true })).toBeVisible();
+  await expect(progress).toHaveAttribute('aria-valuenow', '15');
+
+  pending.release();
+  await expect(progress).toHaveCount(0);
+});
+
+test('смуга збору зникає після «Скасувати»', async ({ page }) => {
+  const pending = held(SUCCESS_ONE, 200);
+  await open(page, [pending.handler]);
+
+  await loadButton(page).click();
+  await expect(page.getByRole('progressbar', { name: 'Збір позицій' })).toBeVisible();
+  await cancelButton(page).click();
+  await expect(page.getByRole('progressbar', { name: 'Збір позицій' })).toHaveCount(0);
+});
+
+test('«Докладно»: закрите за замовчуванням, розкривається кліком', async ({ page }) => {
+  await open(page, [json({
+    ...SUCCESS_ONE,
+    diagnostics: { connectMs: 213, messages: 11, rejected: 0, byType: { PositionReport: 11 } },
+  }, 200)]);
+  await load(page, 'Спроба 12:00:00 UTC: отримано суден: 1');
+
+  const line = "з'єднання: 0,2 с · повідомлень: 11 (PositionReport: 11) · відкинуто: 0 · суден: 1";
+  await expect(page.getByText(line, { exact: true })).toBeHidden();
+  await page.getByText('Докладно', { exact: true }).click();
+  await expect(page.getByText(line, { exact: true })).toBeVisible();
+});
+
+test('помилка без діагностики: «Докладно» немає', async ({ page }) => {
+  await open(page, [json({ ...ERROR_NO_KEY, diagnostics: null }, 502)]);
+  await load(page, 'Спроба 12:00:00 UTC: не вдалося отримати дані: Ключ AISStream не налаштовано');
+  await expect(page.getByText('Докладно', { exact: true })).toHaveCount(0);
 });

@@ -31,11 +31,28 @@ interface VesselCardProps {
   readonly vessel: Vessel;
 }
 
+type FieldKey = 'name' | 'id' | 'coordinates' | 'speed' | 'course' | 'timestamp' | 'source';
+
 interface VesselField {
-  readonly key: string;
+  readonly key: FieldKey;
   readonly label: string;
   readonly value: string;
 }
+
+/**
+ * Значок перед підписом поля — контури 24×24 штрихом `currentColor`. Значок
+ * лише допомагає оку знайти рядок; значення несе текст підпису, тому SVG
+ * `aria-hidden` і читач екрана його пропускає.
+ */
+const FIELD_ICON: Record<FieldKey, ReactElement> = {
+  name: <path d="M3 17l2 4h14l2-4-9-3-9 3zM12 3v11M8 7l4-4 4 4" />,
+  id: <path d="M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2zM7 10h4M7 14h6" />,
+  coordinates: <path d="M12 21s-7-6-7-11a7 7 0 0114 0c0 5-7 11-7 11zM12 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />,
+  speed: <path d="M4 15a8 8 0 1116 0M12 15l4-5" />,
+  course: <path d="M12 21a9 9 0 100-18 9 9 0 000 18zM12 7l3 8-3-2-3 2z" />,
+  timestamp: <path d="M12 21a9 9 0 100-18 9 9 0 000 18zM12 7v5l3 2" />,
+  source: <path d="M4 12a8 8 0 0116 0M7.5 12a4.5 4.5 0 019 0M12 12v8" />,
+};
 
 /**
  * Картка нічого не вирішує: вона показує одне судно, передане пропсом. Вибір
@@ -85,7 +102,23 @@ export function VesselCard({ vessel }: VesselCardProps): ReactElement {
     <dl className={styles.card}>
       {fields.map((field) => (
         <div className={styles.row} key={field.key}>
-          <dt className={styles.label}>{field.label}</dt>
+          <dt className={styles.label}>
+            <svg
+              className={styles.icon}
+              viewBox="0 0 24 24"
+              width="12"
+              height="12"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              {FIELD_ICON[field.key]}
+            </svg>
+            {field.label}
+          </dt>
           <dd className={styles.value}>{field.value}</dd>
         </div>
       ))}

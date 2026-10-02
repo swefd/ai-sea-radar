@@ -7,7 +7,20 @@
 import type { Vessel } from './vessel';
 
 export type SnapshotErrorCode =
-  | 'no_api_key' | 'connect_failed' | 'provider_error' | 'disconnected' | 'internal';
+  | 'no_api_key' | 'connect_failed' | 'provider_error' | 'disconnected' | 'internal'
+  | 'invalid_params';
+
+/**
+ * Діагностика спроби (специфікація 2026-09-29 §3.2). Форма та сама, що
+ * `CollectDiagnostics` збирача, але оголошена окремо: `entities` не імпортує
+ * `shared/api`, а інтерфейс читає саме цей тип.
+ */
+export type SnapshotDiagnostics = {
+  connectMs: number | null;
+  messages: number;
+  rejected: number;
+  byType: Record<string, number>;
+};
 
 export type SnapshotResponse =
   | {
@@ -18,5 +31,12 @@ export type SnapshotResponse =
       count: number;
       truncated: boolean;
       reason: 'window_elapsed' | 'limit_reached';
+      includeClassB: boolean;
+      diagnostics: SnapshotDiagnostics;
     }
-  | { ok: false; attemptedAt: string; error: { code: SnapshotErrorCode; message: string } };
+  | {
+      ok: false;
+      attemptedAt: string;
+      error: { code: SnapshotErrorCode; message: string };
+      diagnostics: SnapshotDiagnostics | null;
+    };
