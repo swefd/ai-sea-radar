@@ -33,3 +33,21 @@ test('ліміт: хвіст " · зупинено на ліміті 100"', () =
     'AISStream · знімок за 15 с · отримано 12:00:00 UTC · суден: 100 · вибірка неповна · зупинено на ліміті 100',
   );
 });
+
+test('вікно з відповіді: 120 і 300 с — секундами', () => {
+  expect(snapshotCaption({ ...BASE, windowSeconds: 120 })).toBe(
+    'AISStream · знімок за 120 с · отримано 12:00:00 UTC · суден: 3 · вибірка неповна',
+  );
+  expect(snapshotCaption({ ...BASE, windowSeconds: 300 })).toBe(
+    'AISStream · знімок за 300 с · отримано 12:00:00 UTC · суден: 3 · вибірка неповна',
+  );
+});
+
+test('клас B: хвіст у кінці, після ліміту', () => {
+  expect(snapshotCaption({ ...BASE, includeClassB: true })).toBe(
+    'AISStream · знімок за 15 с · отримано 12:00:00 UTC · суден: 3 · вибірка неповна · із малими суднами (клас B)',
+  );
+  expect(snapshotCaption({ ...BASE, count: 100, truncated: true, reason: 'limit_reached', includeClassB: true })).toBe(
+    'AISStream · знімок за 15 с · отримано 12:00:00 UTC · суден: 100 · вибірка неповна · зупинено на ліміті 100 · із малими суднами (клас B)',
+  );
+});
