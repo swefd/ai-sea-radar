@@ -8,8 +8,10 @@ import {
   SOURCE_LABELS,
   fleetAtTick,
   lastFleetTick,
+  type SnapshotDiagnostics,
   type Vessel,
 } from '@/entities/vessel';
+import { DEFAULT_SNAPSHOT_SETTINGS, type SnapshotSettings } from '@/shared/config';
 
 import { fetchSnapshot } from '../lib/fetch-snapshot';
 import {
@@ -17,6 +19,7 @@ import {
   snapshotCaption,
   type SnapshotSuccess,
 } from '../lib/snapshot-caption';
+import { diagnosticsLine } from '../lib/snapshot-details';
 import { DoverStraitMap } from './dover-strait-map';
 import { VesselPanel } from './vessel-panel';
 
@@ -49,36 +52,57 @@ const LAST_TICK = lastFleetTick(DEMO_ROUTES);
  * «Дбайливо» зберегти попередній набір після помилки тут неможливо формою
  * типу, а не домовленістю: SPRINT-02:91 прямо називає це поверненням на
  * доопрацювання.
+ *
+ * `cancelled` — людина сама обірвала спробу; суден немає, як і в `error`, але
+ * це не помилка (специфікація 2026-09-29 §5.2).
  */
 type LoadState =
   | { kind: 'idle-demo' }
   | { kind: 'loading' }
   | { kind: 'success'; response: SnapshotSuccess }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; diagnostics: SnapshotDiagnostics | null }
+  | { kind: 'cancelled' };
 
 // Тексти станів — дослівно з SPRINT-02:31…:35.
 const LOADING_CAPTION = 'Завантаження…';
 const NO_DATA_CAPTION = 'Даних на карті немає';
 const EMPTY_NOTICE = 'За час збору позицій не отримано';
+// Специфікація 2026-09-29 §5.2.
+const CANCELLED_NOTICE = 'Завантаження скасовано';
 
 /** Порожній набір — модульна стала, щоб його ідентичність не мінялася з рендером
  * і ефект маркерів не перезапускався без причини. */
 const NO_VESSELS: readonly Vessel[] = [];
 
-/** Підпис і пояснення — чисте похідне від стану, без жодного `useState`. */
-function describe(load: LoadState): { caption: string; notice: string | null } {
+/**
+ * Підпис, пояснення й рядок «Докладно» — чисте похідне від стану, без жодного
+ * `useState`. Рядок діагностики помилки — лише коли з'єднання відкрилося
+ * (специфікація 2026-09-29 §5.4): рядок із самих нулів нічого не пояснює.
+ */
+function describe(load: LoadState): { caption: string; notice: string | null; details: string | null } {
   switch (load.kind) {
     case 'idle-demo':
-      return { caption: SOURCE_LABELS.demo, notice: null };
+      return { caption: SOURCE_LABELS.demo, notice: null, details: null };
     case 'loading':
-      return { caption: LOADING_CAPTION, notice: null };
+      return { caption: LOADING_CAPTION, notice: null, details: null };
     case 'success':
       return {
         caption: snapshotCaption(load.response),
         notice: load.response.count === 0 ? EMPTY_NOTICE : null,
+        details: load.response.diagnostics
+          ? diagnosticsLine(load.response.diagnostics, load.response.count)
+          : null,
       };
     case 'error':
-      return { caption: NO_DATA_CAPTION, notice: `Не вдалося отримати дані: ${load.message}` };
+      return {
+        caption: NO_DATA_CAPTION,
+        notice: `Не вдалося отримати дані: ${load.message}`,
+        details: load.diagnostics && load.diagnostics.connectMs !== null
+          ? diagnosticsLine(load.diagnostics, null)
+          : null,
+      };
+    case 'cancelled':
+      return { caption: NO_DATA_CAPTION, notice: CANCELLED_NOTICE, details: null };
   }
 }
 
@@ -86,11 +110,24 @@ export function VesselView() {
   const [selectedVesselId, setSelectedVesselId] = useState<string | null>(null);
   const [load, setLoad] = useState<LoadState>({ kind: 'idle-demo' });
 
+  // Налаштування наступної спроби. Лише стан компонента: між запусками не
+  // зберігаються (PROJECT_BRIEF:113), після оновлення — знову типові.
+  const [settings, setSettings] = useState<SnapshotSettings>(DEFAULT_SNAPSHOT_SETTINGS);
+
   // Команда карті «до початкового виду» — лічильник, а не прапорець (див.
   // `LeafletMapProps.resetViewKey`). Чи був уже непорожній успіх — ref, а не
   // стан: він нічого не рендерить, і читається лише в обробнику, не в рендері.
   const [resetViewKey, setResetViewKey] = useState(0);
   const hadNonEmptySuccessRef = useRef(false);
+
+  // Контролер ПОТОЧНОЇ спроби. Ref, а не стан: він нічого не рендерить. Він же
+  // — ознака «чия це відповідь»: спроба, чий контролер уже не поточний
+  // (скасовано або розмонтовано), свій результат не записує.
+  const attemptRef = useRef<AbortController | null>(null);
+
+  // Розмонтування (hot reload, закриття) обриває запит: інакше сервер тримав
+  // би сокет до кінця вікна — а воно тепер буває й 5 хвилин.
+  useEffect(() => () => attemptRef.current?.abort(), []);
 
   // ЄДИНА ЗАКОННА ФОРМА моменту старту, і це виміряно проти справжнього конфігу
   // цього репозиторію, а не обрано на смак: `eslint-plugin-react-hooks@7.1.1`
@@ -164,20 +201,29 @@ export function VesselView() {
   //
   // Вибір скидається ДО запиту: у `loading` суден немає (SPRINT-02:31), і
   // картка, що пережила б їх, показувала б судно, якого на карті нема. Повторне
-  // натискання під час збору неможливе — кнопка `disabled` у `loading`, і це
-  // єдиний захист: другого запиту обробник не очікує.
+  // натискання під час збору неможливе — у `loading` кнопки завантаження немає,
+  // на її місці «Скасувати». Та й без цього відповідь чужої спроби не пишеться.
   async function handleLoad() {
+    const attempt = new AbortController();
+    attemptRef.current = attempt;
     setSelectedVesselId(null);
     setLoad({ kind: 'loading' });
 
-    const response = await fetchSnapshot();
+    const response = await fetchSnapshot(settings, attempt.signal);
+
+    // Відповідь чужої спроби — ігнор. Стан уже записав той, хто її обірвав.
+    if (attemptRef.current !== attempt) return;
+    attemptRef.current = null;
+
+    if (response === 'cancelled') return;
 
     if (response === null) {
-      setLoad({ kind: 'error', message: NO_SERVER_RESPONSE });
+      setLoad({ kind: 'error', message: NO_SERVER_RESPONSE, diagnostics: null });
       return;
     }
     if (!response.ok) {
-      setLoad({ kind: 'error', message: response.error.message });
+      // `?? null` — захист від сервера без поля (стара збірка під dev).
+      setLoad({ kind: 'error', message: response.error.message, diagnostics: response.diagnostics ?? null });
       return;
     }
 
@@ -192,6 +238,14 @@ export function VesselView() {
     }
   }
 
+  // Стан пише САМ обробник, а не гілка 'cancelled' у handleLoad: відповідь
+  // обірваного запиту може й не прийти, а людина має побачити результат одразу.
+  function handleCancel() {
+    attemptRef.current?.abort();
+    attemptRef.current = null;
+    setLoad({ kind: 'cancelled' });
+  }
+
   // Усе видиме — похідне від стану спроби й двох чисел. Карта й картка читають
   // РЕЗУЛЬТАТ ОДНОГО ВИРАЗУ, тож розійтися їм нема на чому. Демонстраційний
   // флот рахується лише в `idle-demo`.
@@ -201,7 +255,7 @@ export function VesselView() {
       : load.kind === 'success'
         ? load.response.vessels
         : NO_VESSELS;
-  const { caption, notice } = describe(load);
+  const { caption, notice, details } = describe(load);
 
   // У стані лежить тільки id, ніколи копія судна: судно застаріло б з першим
   // же тіком, а id — ні. Саме тому оновлення картки на тіку безкоштовне.
@@ -224,7 +278,11 @@ export function VesselView() {
         caption={caption}
         notice={notice}
         loading={load.kind === 'loading'}
+        settings={settings}
+        onSettingsChange={setSettings}
+        details={details}
         onLoad={handleLoad}
+        onCancel={handleCancel}
       />
     </>
   );

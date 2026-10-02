@@ -20,8 +20,18 @@ import { DOVER_STRAIT_REGION } from '@/shared/config';
  * Повертає РЯДОК, а не об'єкт: рішення про формат живе тут, а connect.ts лише
  * передає готове в сокет.
  */
-export function buildSubscription(apiKey: string): string {
+/**
+ * Малі судна класу B — окремий тип повідомлення, не підвид PositionReport.
+ * Вмикається користувачем (специфікація 2026-09-29, П-2); без опції — рівно
+ * підписка R2 (SPRINT-02:23).
+ */
+export type SubscriptionOptions = { includeClassB?: boolean };
+
+export function buildSubscription(apiKey: string, options: SubscriptionOptions = {}): string {
   const { south, west, north, east } = DOVER_STRAIT_REGION;
+  const types = options.includeClassB === true
+    ? ['PositionReport', 'StandardClassBPositionReport']
+    : ['PositionReport'];
 
   return JSON.stringify({
     APIKey: apiKey,
@@ -29,6 +39,6 @@ export function buildSubscription(apiKey: string): string {
     // Порядок пари саме такий за документацією та SPRINT-02:23; переставлені
     // місцями числа дали б коробку біля Гани й порожній збір при справному сокеті.
     BoundingBoxes: [[[south, west], [north, east]]],
-    FilterMessageTypes: ['PositionReport'],
+    FilterMessageTypes: types,
   });
 }

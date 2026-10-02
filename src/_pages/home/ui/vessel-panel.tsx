@@ -16,10 +16,13 @@
 // позицій і червоного юніт-рядка, перш ніж її дотримали.
 'use client';
 
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 
 import type { Vessel } from '@/entities/vessel';
 import { VesselCard } from '@/entities/vessel/ui/vessel-card';
+import { SNAPSHOT_WINDOW_OPTIONS, type SnapshotSettings } from '@/shared/config';
+
+import { windowLabel, windowValueText } from '../lib/snapshot-details';
 
 import styles from './vessel-panel.module.css';
 
@@ -32,12 +35,20 @@ interface VesselPanelProps {
   readonly caption: string;
   /** Пояснення для порожнього успіху й помилки; `null` — пояснювати нічого. */
   readonly notice: string | null;
-  /** Триває збір: кнопка заблокована, удруге натиснути не можна (SPRINT-02:11). */
+  /** Триває збір: замість кнопки завантаження — «Скасувати» (специфікація 2026-09-29 §5.1). */
   readonly loading: boolean;
   readonly onLoad: () => void;
+  /** Обриває поточну спробу; кнопка є лише в loading. */
+  readonly onCancel: () => void;
+  /** Налаштування наступної спроби — стан `VesselView`, тут лише показ. */
+  readonly settings: SnapshotSettings;
+  readonly onSettingsChange: (next: SnapshotSettings) => void;
+  /** Рядок діагностики для «Докладно»; `null` — блоку немає. */
+  readonly details: string | null;
 }
 
 const LOAD_BUTTON_LABEL = 'Завантажити справжні позиції';
+const CANCEL_BUTTON_LABEL = 'Скасувати';
 
 /**
  * Шеврон. Інлайновий SVG, а не символ шрифту: гліф залежав би від того, що
@@ -78,8 +89,18 @@ function ChevronIcon({ pointsUp }: { readonly pointsUp: boolean }) {
 // панелі він не зачепив би.
 //
 // `.actions` — кнопка завантаження. Поза `.body`, тож видима й згорнутою
-// панеллю: єдина дія застосунку не має ховатися за іншою кнопкою. `disabled`
-// у `loading` — це і є «удруге натиснути не можна» з SPRINT-02:11.
+// панеллю: єдина дія застосунку не має ховатися за іншою кнопкою. У `loading`
+// та сама кнопка стає «Скасувати» — рішення власника 2026-10-02, що замінило
+// `disabled` з SPRINT-02:11: удруге завантажити не можна, бо такої кнопки
+// зараз немає. Елемент DOM один і той самий, тож фокус клавіатури на ньому
+// лишається. Другий клік подвійного кліку (`detail > 1`) влучає вже в
+// «Скасувати» — його відкинуто, інакше подвійний клік обривав би власну спробу.
+//
+// `.settings` — повзунок вікна й прапорець класу B, над кнопкою: їх вибирають
+// ДО натискання. `<fieldset disabled>` блокує обидва одним атрибутом під час
+// збору. Поза `.body`, тож видимі й згорнутою панеллю. `aria-label` повзунка
+// явний, бо видимий `<label>` містить змінне число, а тест і читач екрана
+// шукають стале ім'я.
 //
 // `.source` — підпис стану, видимий ЗАВЖДИ, у тому числі згорнутою панеллю.
 // US-06 вимагає, щоб на екрані було написано, які саме дані показано, тому
@@ -92,20 +113,75 @@ function ChevronIcon({ pointsUp }: { readonly pointsUp: boolean }) {
 // «суден: 0» і «Даних на карті немає» лишилися б без причини. Рендериться
 // лише коли є що сказати — порожній вузол зі статусом був би шумом.
 //
+// `.details` — «Докладно», закритий за замовчуванням (специфікація 2026-09-29
+// §5.4). Живе першим у `.body`, тож згортання ховає його разом із карткою.
+//
 // `.body` — вміст, що лишається в DOM і згорнутою панеллю; ховає його CSS.
 // Умовний рендер скидав би позицію прокручування картки на кожне згортання, а
 // доказу більше не давав би: `inert` знімає вміст і з фокуса, і з дерева
 // доступності, тобто з погляду клавіатури та читача екрана його немає.
-export function VesselPanel({ vessel, caption, notice, loading, onLoad }: VesselPanelProps) {
+export function VesselPanel({
+  vessel,
+  caption,
+  notice,
+  loading,
+  onLoad,
+  onCancel,
+  settings,
+  onSettingsChange,
+  details,
+}: VesselPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
+
+  function handleCancelClick(event: MouseEvent<HTMLButtonElement>) {
+    if (event.detail > 1) return;
+    onCancel();
+  }
 
   return (
     <aside className={`${styles.panel} ${collapsed ? styles.collapsed : ''}`}>
       <div className={styles.aurora} aria-hidden="true" />
 
+      <fieldset className={styles.settings} disabled={loading}>
+        <label className={styles.settingLabel} htmlFor="snapshot-window">
+          Вікно збору: {windowLabel(settings.windowSeconds)}
+        </label>
+        <input
+          id="snapshot-window"
+          className={styles.slider}
+          type="range"
+          min={0}
+          max={SNAPSHOT_WINDOW_OPTIONS.length - 1}
+          step={1}
+          value={SNAPSHOT_WINDOW_OPTIONS.indexOf(settings.windowSeconds as (typeof SNAPSHOT_WINDOW_OPTIONS)[number])}
+          aria-label="Вікно збору"
+          aria-valuetext={windowValueText(settings.windowSeconds)}
+          onChange={(event) =>
+            onSettingsChange({ ...settings, windowSeconds: SNAPSHOT_WINDOW_OPTIONS[Number(event.target.value)] })
+          }
+        />
+        <div className={styles.ticks} aria-hidden="true">
+          {SNAPSHOT_WINDOW_OPTIONS.map((seconds) => (
+            <span key={seconds}>{windowLabel(seconds)}</span>
+          ))}
+        </div>
+        <label className={styles.checkbox}>
+          <input
+            type="checkbox"
+            checked={settings.includeClassB}
+            onChange={(event) => onSettingsChange({ ...settings, includeClassB: event.target.checked })}
+          />
+          Малі судна (клас B)
+        </label>
+      </fieldset>
+
       <div className={styles.actions}>
-        <button type="button" className={styles.load} onClick={onLoad} disabled={loading}>
-          {LOAD_BUTTON_LABEL}
+        <button
+          type="button"
+          className={`${styles.load} ${loading ? styles.cancel : ''}`}
+          onClick={loading ? handleCancelClick : onLoad}
+        >
+          {loading ? CANCEL_BUTTON_LABEL : LOAD_BUTTON_LABEL}
         </button>
       </div>
 
@@ -131,6 +207,12 @@ export function VesselPanel({ vessel, caption, notice, loading, onLoad }: Vessel
       )}
 
       <div className={styles.body} id="vessel-panel-body" inert={collapsed}>
+        {details !== null && (
+          <details className={styles.details}>
+            <summary>Докладно</summary>
+            <p>{details}</p>
+          </details>
+        )}
         {vessel !== null && <VesselCard vessel={vessel} />}
       </div>
     </aside>

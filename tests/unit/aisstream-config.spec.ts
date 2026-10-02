@@ -5,6 +5,7 @@ import {
   AISSTREAM_ENDPOINT,
   SNAPSHOT_WINDOW_SECONDS,
   SNAPSHOT_VESSEL_LIMIT,
+  SNAPSHOT_WINDOW_OPTIONS,
 } from '@/shared/config';
 
 // Модуль бере оточення ПАРАМЕТРОМ, а не читає process.env всередині. Інакше
@@ -47,4 +48,9 @@ test('константи вікна — узгоджені значення SPRI
   expect(AISSTREAM_ENDPOINT).toBe('wss://stream.aisstream.io/v0/stream');
   expect(SNAPSHOT_WINDOW_SECONDS).toBe(15);
   expect(SNAPSHOT_VESSEL_LIMIT).toBe(100);
+});
+
+test('типове вікно входить до дозволених, а дозволені — рівно сім узгоджених', () => {
+  expect(SNAPSHOT_WINDOW_OPTIONS).toEqual([15, 30, 60, 120, 180, 240, 300]);
+  expect(SNAPSHOT_WINDOW_OPTIONS).toContain(SNAPSHOT_WINDOW_SECONDS);
 });

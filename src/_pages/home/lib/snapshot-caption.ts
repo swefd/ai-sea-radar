@@ -18,10 +18,16 @@ export const NO_SERVER_RESPONSE = 'Немає відповіді сервера'
 
 export type SnapshotSuccess = Extract<SnapshotResponse, { ok: true }>;
 
+// Доповнення, коли в підписці були малі судна: інакше два знімки з однаковим
+// вікном давали б різну кількість суден без видимої причини (специфікація
+// 2026-09-29 §5.3).
+const CLASS_B_TAIL = ' · із малими суднами (клас B)';
+
 export function snapshotCaption(success: SnapshotSuccess): string {
   const base =
     `AISStream · знімок за ${success.windowSeconds} с · ` +
     `отримано ${formatTimestamp(success.collectedAt)} · ` +
     `суден: ${success.count} · вибірка неповна`;
-  return success.truncated ? `${base} · зупинено на ліміті ${SNAPSHOT_VESSEL_LIMIT}` : base;
+  const limited = success.truncated ? `${base} · зупинено на ліміті ${SNAPSHOT_VESSEL_LIMIT}` : base;
+  return success.includeClassB ? `${limited}${CLASS_B_TAIL}` : limited;
 }
